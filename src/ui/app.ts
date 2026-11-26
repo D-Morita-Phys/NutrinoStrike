@@ -7,6 +7,7 @@
 // duplicate loops can accumulate.
 
 import { createSceneMachine, type SceneId } from "../game/scenes.ts";
+import { type DetectorId } from "../game/detectors.ts";
 import { Game, type GameUi } from "../render/game.ts";
 import { createTopBar } from "./menu.ts";
 import { createScreens } from "./screens.ts";
@@ -14,17 +15,24 @@ import { createScreens } from "./screens.ts";
 export function mountApp(root: HTMLElement): void {
   const machine = createSceneMachine();
 
+  // Default target until the player picks one on the select screen.
+  let selectedDetector: DetectorId = "superK";
+
   const screens = createScreens({
     onStart: () => machine.go("select"),
     onOpenCollection: () => machine.go("collection"),
-    onSelectDetector: () => machine.go("play"),
+    onSelectDetector: (id) => {
+      selectedDetector = id;
+      machine.go("play");
+    },
   });
 
   const topBar = createTopBar({
     onRestart: () => machine.go("start"),
     onOpenCollection: () => machine.go("collection"),
-    onVolumeChange: () => {
-      // Placeholder until FEAT-002 wires the Web Audio engine.
+    onVolumeChange: (value) => {
+      void game.getAudio().resume();
+      game.getAudio().setVolume(value);
     },
   });
 
@@ -54,6 +62,9 @@ export function mountApp(root: HTMLElement): void {
   const game = new Game(screens.canvas, ui);
   let gameRunning = false;
 
+  // Reflect the persisted volume in the menu slider.
+  topBar.setVolume(game.getAudio().getVolume());
+
   const startGame = (): void => {
     if (gameRunning) return;
     game.start();
@@ -71,6 +82,7 @@ export function mountApp(root: HTMLElement): void {
     }
     topBar.close();
     if (scene === "play") {
+      game.setDetector(selectedDetector);
       startGame();
     } else {
       stopGame();

@@ -22,6 +22,8 @@ export interface TopBar {
   readonly element: HTMLElement;
   /** Close the menu panel if open. */
   close(): void;
+  /** Reflect a volume (0..1) in the slider without firing onVolumeChange. */
+  setVolume(value: number): void;
 }
 
 /** Build the top bar with the hamburger menu wired to the given handlers. */
@@ -109,5 +111,10 @@ export function createTopBar(handlers: MenuHandlers): TopBar {
     handlers.onVolumeChange(Number(volumeSlider.value) / 100);
   });
 
-  return { element: bar, close };
+  const setVolume = (value: number): void => {
+    const clamped = Math.max(0, Math.min(1, value));
+    volumeSlider.value = String(Math.round(clamped * 100));
+  };
+
+  return { element: bar, close, setVolume };
 }

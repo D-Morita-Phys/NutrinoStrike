@@ -10,15 +10,17 @@
 // the existing gameplay DOM (canvas, energy readout, result/history/how-to
 // panels) so the current drag-launch loop keeps working after the refactor.
 
+import { DETECTOR_IDS, type DetectorId } from "../game/detectors.ts";
+import { detectorArtSvg } from "./detectorArt.ts";
+
 export interface StartScreenHandlers {
   onStart(): void;
   onOpenCollection(): void;
   /**
-   * Proceed from the select screen to play. In FEAT-001 the select screen is a
-   * stub, so it exposes a single "play" button; FEAT-002 replaces this with the
-   * KamLAND vs Super-Kamiokande detector choice.
+   * Proceed from the select screen to play with the chosen detector. The id
+   * becomes the single on-field target for the shot.
    */
-  onSelectDetector(): void;
+  onSelectDetector(id: DetectorId): void;
 }
 
 export interface Screens {
@@ -72,20 +74,62 @@ export function createScreens(handlers: StartScreenHandlers): Screens {
   startActions.append(startBtn, collectionBtn);
   start.append(startTitle, startTagline, startActions);
 
-  // --- Select screen (stub; FEAT-002 adds detector art + choice) ---
+  // --- Select screen: choose KamLAND or Super-Kamiokande ---
   const select = screen("select", "screen-select");
   const selectHeading = document.createElement("h2");
   selectHeading.className = "screen-heading";
   selectHeading.textContent = "検出器をえらぶ";
   const selectNote = document.createElement("p");
   selectNote.className = "screen-note";
-  selectNote.textContent = "KamLAND か Super-Kamiokande を選択してください。";
-  const selectPlayBtn = document.createElement("button");
-  selectPlayBtn.type = "button";
-  selectPlayBtn.className = "btn btn-primary btn-lg";
-  selectPlayBtn.textContent = "プレイ";
-  selectPlayBtn.addEventListener("click", handlers.onSelectDetector);
-  select.append(selectHeading, selectNote, selectPlayBtn);
+  selectNote.textContent =
+    "ニュートリノを撃ち込む的を選びましょう。選んだ検出器が的になります。";
+
+  const detectorGrid = document.createElement("div");
+  detectorGrid.className = "detector-grid";
+
+  const DETECTOR_BLURB: Record<DetectorId, { name: string; ja: string; blurb: string }> = {
+    kamland: {
+      name: "KamLAND",
+      ja: "カムランド",
+      blurb: "液体シンチレーターの球形バルーン。低エネルギー観測が得意。",
+    },
+    superK: {
+      name: "Super-Kamiokande",
+      ja: "スーパーカミオカンデ",
+      blurb: "巨大な水チェレンコフ検出器。壁一面の光電子増倍管が目印。",
+    },
+  };
+
+  for (const id of DETECTOR_IDS) {
+    const info = DETECTOR_BLURB[id];
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "detector-card";
+    card.dataset.detector = id;
+    card.setAttribute("aria-label", `${info.name} をえらぶ`);
+
+    const art = document.createElement("div");
+    art.className = "detector-art";
+    art.innerHTML = detectorArtSvg(id);
+
+    const name = document.createElement("div");
+    name.className = "detector-name";
+    name.textContent = info.name;
+
+    const ja = document.createElement("div");
+    ja.className = "detector-name-ja";
+    ja.textContent = info.ja;
+
+    const blurb = document.createElement("p");
+    blurb.className = "detector-blurb";
+    blurb.textContent = info.blurb;
+
+    card.append(art, name, ja, blurb);
+    card.addEventListener("click", () => handlers.onSelectDetector(id));
+    detectorGrid.append(card);
+  }
+
+  select.append(selectHeading, selectNote, detectorGrid);
 
   // --- Play screen (hosts the live gameplay) ---
   const play = screen("play", "screen-play");

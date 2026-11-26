@@ -1,10 +1,11 @@
 // Canvas rendering, input handling and the game loop for Neutrino Strike.
 //
-// The Game class owns a <canvas>, the Ball, the detectors, the current drag
-// state and the requestAnimationFrame loop. It wires pointer input (mouse AND
-// touch) to the physics launch, steps physics each frame, hit-tests the ball
-// against the detectors, and on a hit runs the FEAT-001 lottery to decide the
-// observed species. Results are pushed to a small on-page panel.
+// The Game class owns a <canvas>, the Ball, the single chosen detector, the
+// current drag state and the requestAnimationFrame loop. It wires pointer input
+// (mouse AND touch) to the physics launch, steps physics each frame, hit-tests
+// the ball against the chosen detector, and on a hit runs the FEAT-001 lottery
+// to decide the observed species. Results are pushed to a small on-page panel.
+// A synthesized sound engine and a decaying screen shake add launch/hit feel.
 
 import {
   NEUTRINO_INFO,
@@ -24,9 +25,11 @@ import {
 } from "../game/physics.ts";
 import {
   type Detector,
-  createDetectors,
-  detectorHit,
+  type DetectorId,
+  createDetector,
+  hitTest,
 } from "../game/detectors.ts";
+import { AudioEngine } from "../game/audio.ts";
 
 // ---------------------------------------------------------------------------
 // TUNABLE CONSTANTS (layout / presentation)
@@ -66,21 +69,31 @@ export interface GameUi {
   readonly energyReadout: HTMLElement;
 }
 
+/** How fast the screen shake decays toward zero (higher = snappier). */
+const SHAKE_DECAY_PER_SEC = 6;
+
 export class Game {
   private readonly ctx: CanvasRenderingContext2D;
   private readonly bounds: Bounds;
-  private readonly detectors: Detector[];
+  private detector: Detector;
   private ball: Ball;
 
   // Drag state.
   private dragging = false;
   private pointer: Vec2 = { x: 0, y: 0 };
+  /** Fixed home position the drag vector is always measured from. */
+  private readonly home: Vec2;
 
   // Shot state.
   private launched = false;
   /** Energy (MeV) locked in at launch for this shot's lottery draw. */
   private shotEnergyMeV = 0;
   private resolved = false;
+
+  // Screen-shake state (magnitude in pixels, decays to zero over time).
+  private shake = 0;
+
+  private readonly audio = new AudioEngine();
 
   private readonly history: Observation[] = [];
   private lastTime = 0;
@@ -91,6 +104,7 @@ export class Game {
   constructor(
     private readonly canvas: HTMLCanvasElement,
     private readonly ui: GameUi,
+    detectorId: DetectorId = "superK",
   ) {
     const ctx = canvas.getContext("2d");
     if (!ctx) {
@@ -107,11 +121,25 @@ export class Game {
     this.ctx.scale(dpr, dpr);
 
     this.bounds = { width: CANVAS_WIDTH, height: CANVAS_HEIGHT };
-    this.detectors = createDetectors(CANVAS_WIDTH, CANVAS_HEIGHT);
+    this.detector = createDetector(detectorId, CANVAS_WIDTH, CANVAS_HEIGHT);
+    this.home = {
+      x: CANVAS_WIDTH / 2,
+      y: CANVAS_HEIGHT * BALL_HOME_Y_FRACTION,
+    };
     this.ball = this.makeHomeBall();
 
     this.attachInput();
     this.updateEnergyReadout(0);
+  }
+
+  /** Change the on-field target detector (used when re-entering play). */
+  setDetector(detectorId: DetectorId): void {
+    this.detector = createDetector(detectorId, CANVAS_WIDTH, CANVAS_HEIGHT);
+  }
+
+  /** Expose the audio engine so the app can wire the volume slider to it. */
+  getAudio(): AudioEngine {
+    return this.audio;
   }
 
   /** Begin the render/update loop. */
@@ -140,10 +168,7 @@ export class Game {
   // --- Setup helpers -------------------------------------------------------
 
   private makeHomeBall(): Ball {
-    return createBall(
-      this.bounds.width / 2,
-      this.bounds.height * BALL_HOME_Y_FRACTION,
-    );
+    return createBall(this.home.x, this.home.y);
   }
 
   private resetBall(): void {
@@ -189,6 +214,7 @@ export class Game {
   }
 
   private onDown = (e: MouseEvent): void => {
+    void this.audio.resume();
     this.beginDrag(this.toCanvas(e.clientX, e.clientY));
   };
 
@@ -204,6 +230,7 @@ export class Game {
   private onTouchStart = (e: TouchEvent): void => {
     if (e.touches.length === 0) return;
     e.preventDefault();
+    void this.audio.resume();
     const t = e.touches[0];
     this.beginDrag(this.toCanvas(t.clientX, t.clientY));
   };
@@ -221,17 +248,21 @@ export class Game {
     this.endDrag();
   };
 
-  /** The drag vector points from the ball toward the current pointer. */
+  /**
+   * The drag vector points from the ball's HOME position toward the current
+   * pointer. Measuring from home (not the pointer-down spot) keeps the
+   * pullToEnergy / dragToVelocity semantics unchanged even though a drag can
+   * now start anywhere on the field.
+   */
   private currentDrag(): Vec2 {
-    return { x: this.pointer.x - this.ball.pos.x, y: this.pointer.y - this.ball.pos.y };
+    return { x: this.pointer.x - this.home.x, y: this.pointer.y - this.home.y };
   }
 
   private beginDrag(p: Vec2): void {
     // Only start a drag while the ball sits at home (no shot in flight).
     if (this.launched) return;
-    const near = Math.hypot(p.x - this.ball.pos.x, p.y - this.ball.pos.y);
-    // Generous grab radius so the control feels forgiving.
-    if (near > this.ball.radius * 4) return;
+    // Drag from ANYWHERE on the field: a pointer-down anywhere starts charging.
+    // The pull is always measured from the ball's home position.
     this.dragging = true;
     this.pointer = p;
     this.updateEnergyFromDrag();
@@ -257,6 +288,16 @@ export class Game {
     this.ball.vel = dragToVelocity(drag, MAX_PULL);
     this.launched = true;
     this.resolved = false;
+
+    // Feel: a launch kick scaled by pull strength, plus the launch sound.
+    const strength = Math.min(dist, MAX_PULL) / MAX_PULL;
+    this.addShake(4 + strength * 10);
+    this.audio.play("launch", strength);
+  }
+
+  /** Raise the shake magnitude to at least the given value. */
+  private addShake(magnitude: number): void {
+    this.shake = Math.max(this.shake, magnitude);
   }
 
   private updateEnergyFromDrag(): void {
@@ -275,14 +316,19 @@ export class Game {
   // --- Update --------------------------------------------------------------
 
   private update(dt: number): void {
+    // Shake decays toward zero every frame, independent of shot state.
+    if (this.shake > 0) {
+      this.shake *= Math.pow(1 / (1 + SHAKE_DECAY_PER_SEC), dt);
+      if (this.shake < 0.2) this.shake = 0;
+    }
+
     if (!this.launched) return;
 
     step(this.ball, this.bounds, dt);
 
     if (!this.resolved) {
-      const hit = detectorHit(this.detectors, this.ball);
-      if (hit) {
-        this.resolveShot(hit);
+      if (hitTest(this.detector, this.ball)) {
+        this.resolveShot(this.detector);
         return;
       }
     }
@@ -295,6 +341,8 @@ export class Game {
 
   private resolveShot(detector: Detector): void {
     this.resolved = true;
+    this.addShake(16);
+    this.audio.play("hit");
     const species = drawNeutrino(this.shotEnergyMeV);
     const observation: Observation = {
       species,
@@ -363,59 +411,79 @@ export class Game {
 
   private render(): void {
     const { ctx, bounds } = this;
-    ctx.clearRect(0, 0, bounds.width, bounds.height);
 
-    // Background gradient.
+    // Apply the decaying screen shake as a transform-only jitter. This never
+    // touches the ball's logical coordinates; it only offsets the drawing.
+    let ox = 0;
+    let oy = 0;
+    if (this.shake > 0) {
+      ox = (Math.random() * 2 - 1) * this.shake;
+      oy = (Math.random() * 2 - 1) * this.shake;
+    }
+    ctx.save();
+    ctx.translate(ox, oy);
+
+    ctx.clearRect(-ox, -oy, bounds.width, bounds.height);
+
+    // Background gradient (drawn slightly oversized so the shake never exposes
+    // an uncovered edge).
     const bg = ctx.createLinearGradient(0, 0, 0, bounds.height);
     bg.addColorStop(0, "#0b1026");
     bg.addColorStop(1, "#131a3a");
     ctx.fillStyle = bg;
-    ctx.fillRect(0, 0, bounds.width, bounds.height);
+    ctx.fillRect(-20, -20, bounds.width + 40, bounds.height + 40);
 
-    this.renderDetectors();
+    this.renderDetector();
     this.renderAimGuide();
     this.renderBall();
+
+    ctx.restore();
   }
 
-  private renderDetectors(): void {
+  private renderDetector(): void {
     const { ctx } = this;
-    for (const d of this.detectors) {
-      ctx.beginPath();
-      ctx.arc(d.x, d.y, d.radius, 0, Math.PI * 2);
-      ctx.fillStyle = "rgba(255,255,255,0.06)";
-      ctx.fill();
-      ctx.lineWidth = 4;
-      ctx.strokeStyle = d.color;
-      ctx.stroke();
+    const d = this.detector;
+    ctx.beginPath();
+    ctx.arc(d.x, d.y, d.radius, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(255,255,255,0.06)";
+    ctx.fill();
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = d.color;
+    ctx.stroke();
 
-      // Inner ring for a target look.
-      ctx.beginPath();
-      ctx.arc(d.x, d.y, d.radius * 0.55, 0, Math.PI * 2);
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = "rgba(255,255,255,0.3)";
-      ctx.stroke();
+    // Inner ring for a target look.
+    ctx.beginPath();
+    ctx.arc(d.x, d.y, d.radius * 0.55, 0, Math.PI * 2);
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "rgba(255,255,255,0.3)";
+    ctx.stroke();
 
-      ctx.fillStyle = "#ffffff";
-      ctx.textAlign = "center";
-      ctx.font = "bold 14px system-ui, sans-serif";
-      ctx.fillText(d.label, d.x, d.y - 4);
-      ctx.font = "12px system-ui, sans-serif";
-      ctx.fillStyle = "rgba(255,255,255,0.8)";
-      ctx.fillText(d.labelJa, d.x, d.y + 14);
-    }
+    ctx.fillStyle = "#ffffff";
+    ctx.textAlign = "center";
+    ctx.font = "bold 14px system-ui, sans-serif";
+    ctx.fillText(d.label, d.x, d.y - 4);
+    ctx.font = "12px system-ui, sans-serif";
+    ctx.fillStyle = "rgba(255,255,255,0.8)";
+    ctx.fillText(d.labelJa, d.x, d.y + 14);
   }
 
   private renderAimGuide(): void {
     if (!this.dragging) return;
-    const { ctx } = this;
+    const { ctx, home } = this;
     const drag = this.currentDrag();
-    const dist = Math.min(dragDistance(drag), MAX_PULL);
-    const energyMeV = pullToEnergy(dragDistance(drag), MAX_PULL);
+    const rawDist = dragDistance(drag);
+    if (rawDist <= 0) return;
+    const energyMeV = pullToEnergy(rawDist, MAX_PULL);
     const band = energyToBand(energyMeV);
 
-    // Pull-back line from ball to pointer.
+    // True normalized pull strength (0..1): the arrow reads launch energy, so
+    // a full pull is visibly bigger than a half pull (no early saturation).
+    const strength = Math.min(rawDist, MAX_PULL) / MAX_PULL;
+    const color = this.bandColor(band.id);
+
+    // Pull-back line from the home position to the pointer.
     ctx.beginPath();
-    ctx.moveTo(this.ball.pos.x, this.ball.pos.y);
+    ctx.moveTo(home.x, home.y);
     ctx.lineTo(this.pointer.x, this.pointer.y);
     ctx.setLineDash([6, 6]);
     ctx.strokeStyle = "rgba(255,255,255,0.4)";
@@ -423,31 +491,66 @@ export class Game {
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // Launch-direction arrow (opposite of the drag), colored by energy band.
-    const len = dragDistance(drag);
-    if (len > 0) {
-      const ux = -drag.x / len;
-      const uy = -drag.y / len;
-      const guideLen = (dist / MAX_PULL) * 160;
-      const ex = this.ball.pos.x + ux * guideLen;
-      const ey = this.ball.pos.y + uy * guideLen;
-      ctx.beginPath();
-      ctx.moveTo(this.ball.pos.x, this.ball.pos.y);
-      ctx.lineTo(ex, ey);
-      ctx.strokeStyle = this.bandColor(band.id);
-      ctx.lineWidth = 4;
-      ctx.stroke();
-    }
+    // Translucent launch-direction arrow (opposite of the drag). Both its
+    // LENGTH and THICKNESS scale with strength so size encodes energy.
+    const ux = -drag.x / rawDist;
+    const uy = -drag.y / rawDist;
+    const minLen = 36;
+    const maxLen = 300;
+    const shaftLen = minLen + strength * (maxLen - minLen);
+    const shaftWidth = 6 + strength * 22;
+    const headLen = 18 + strength * 26;
+    const headWidth = shaftWidth + 14 + strength * 20;
 
-    // Power/energy label near the ball.
+    // Perpendicular unit vector for building the polygon outline.
+    const px = -uy;
+    const py = ux;
+    const tipX = home.x + ux * shaftLen;
+    const tipY = home.y + uy * shaftLen;
+    const neckX = tipX - ux * headLen;
+    const neckY = tipY - uy * headLen;
+    const hw = shaftWidth / 2;
+
+    ctx.beginPath();
+    // Shaft start, left side.
+    ctx.moveTo(home.x + px * hw, home.y + py * hw);
+    ctx.lineTo(neckX + px * hw, neckY + py * hw);
+    // Left barb.
+    ctx.lineTo(neckX + px * (headWidth / 2), neckY + py * (headWidth / 2));
+    // Tip.
+    ctx.lineTo(tipX, tipY);
+    // Right barb.
+    ctx.lineTo(neckX - px * (headWidth / 2), neckY - py * (headWidth / 2));
+    ctx.lineTo(neckX - px * hw, neckY - py * hw);
+    // Shaft start, right side.
+    ctx.lineTo(home.x - px * hw, home.y - py * hw);
+    ctx.closePath();
+
+    ctx.fillStyle = this.withAlpha(color, 0.38);
+    ctx.fill();
+    ctx.strokeStyle = this.withAlpha(color, 0.85);
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // Power/energy label near the home position.
     ctx.fillStyle = "#ffffff";
     ctx.textAlign = "center";
     ctx.font = "bold 13px system-ui, sans-serif";
     ctx.fillText(
-      formatEnergy(energyMeV),
-      this.ball.pos.x,
-      this.ball.pos.y - this.ball.radius - 8,
+      `${formatEnergy(energyMeV)} (${band.label})`,
+      home.x,
+      home.y + this.ball.radius + 20,
     );
+  }
+
+  /** Apply an alpha to one of the known band hex colors. */
+  private withAlpha(hex: string, alpha: number): string {
+    const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
+    if (!m) return hex;
+    const r = parseInt(m[1], 16);
+    const g = parseInt(m[2], 16);
+    const b = parseInt(m[3], 16);
+    return `rgba(${r},${g},${b},${alpha})`;
   }
 
   private bandColor(id: "low" | "mid" | "high"): string {
