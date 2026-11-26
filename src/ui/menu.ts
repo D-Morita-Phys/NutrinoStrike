@@ -2,18 +2,23 @@
 //
 // This renders a fixed top bar present on every screen. The hamburger button
 // opens a panel with three actions: restart (やり直し), volume (音量調整, a
-// slider placeholder for now; FEAT-002 wires it to the Web Audio engine), and
-// collection (コレクション). Each action closes the menu after running.
+// live slider wired to the Web Audio engine), and collection (コレクション).
+// Each action closes the menu after running.
 //
 // The menu is DOM-only presentation; it knows nothing about scenes directly.
 // Callers pass handlers so navigation stays in the scene wiring (app.ts).
 
 export interface MenuHandlers {
-  /** やり直し: restart back to the start screen. */
+  /**
+   * やり直し: restart the whole run by returning to the start screen. This is
+   * a deliberate "restart from scratch" (per requirement 5): the player picks a
+   * detector again on the way back into play. The subsequent play entry resets
+   * the ball/shot state, so no stale play state survives the restart.
+   */
   onRestart(): void;
   /** コレクション: open the collection screen. */
   onOpenCollection(): void;
-  /** 音量調整: volume changed (0..1). Placeholder until FEAT-002. */
+  /** 音量調整: volume changed (0..1), applied live to the audio engine. */
   onVolumeChange(value: number): void;
 }
 

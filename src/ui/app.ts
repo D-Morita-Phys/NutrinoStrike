@@ -42,6 +42,9 @@ export function mountApp(root: HTMLElement): void {
   });
 
   const topBar = createTopBar({
+    // やり直し restarts the whole run from the start screen (deliberate: the
+    // player re-picks a detector). Re-entering play always resets the ball and
+    // shot state, so no stale play state carries over from the previous run.
     onRestart: () => machine.go("start"),
     onOpenCollection: () => machine.go("collection"),
     onVolumeChange: (value) => {
@@ -109,7 +112,10 @@ export function mountApp(root: HTMLElement): void {
     }
     topBar.close();
     if (scene === "play") {
+      // Always start a replay clean: point at the chosen detector and reset the
+      // ball/shot state so the previous run's resolved shot never leaks in.
       game.setDetector(selectedDetector);
+      game.reset();
       startGame();
     } else {
       stopGame();

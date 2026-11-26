@@ -30,6 +30,14 @@ import {
   hitTest,
 } from "../game/detectors.ts";
 import { AudioEngine } from "../game/audio.ts";
+import {
+  type ShotState,
+  createShotState,
+  isFreshShot,
+  launchShot,
+  resetShotState,
+  resolveShotState,
+} from "../game/shot.ts";
 
 // ---------------------------------------------------------------------------
 // TUNABLE CONSTANTS (layout / presentation)
@@ -93,11 +101,9 @@ export class Game {
   /** Fixed home position the drag vector is always measured from. */
   private readonly home: Vec2;
 
-  // Shot state.
-  private launched = false;
-  /** Energy (MeV) locked in at launch for this shot's lottery draw. */
-  private shotEnergyMeV = 0;
-  private resolved = false;
+  // Per-shot lifecycle (launched / resolved / locked-in energy). Kept as a
+  // pure, reusable record so the reset invariant lives in a testable module.
+  private shot: ShotState = createShotState();
 
   // Screen-shake state (magnitude in pixels, decays to zero over time).
   private shake = 0;
@@ -150,6 +156,26 @@ export class Game {
     this.detector = createDetector(detectorId, CANVAS_WIDTH, CANVAS_HEIGHT);
   }
 
+  /**
+   * Re-home the ball and clear the shot lifecycle so the next run starts
+   * clean. Called on every entry into the play scene (see app.ts). Without
+   * this, a shot resolved in the previous run (its pending reset timeout was
+   * cancelled by stop()) would leak into the next run: the leftover ball would
+   * resume falling and block input until it came to rest. Cancelling any
+   * pending reset timeout here makes reset idempotent and safe to call while
+   * the loop is stopped.
+   */
+  reset(): void {
+    if (this.resetTimeoutId !== 0) {
+      window.clearTimeout(this.resetTimeoutId);
+      this.resetTimeoutId = 0;
+    }
+    this.dragging = false;
+    this.shake = 0;
+    this.flash = 0;
+    this.resetBall();
+  }
+
   /** Expose the audio engine so the app can wire the volume slider to it. */
   getAudio(): AudioEngine {
     return this.audio;
@@ -186,9 +212,7 @@ export class Game {
 
   private resetBall(): void {
     this.ball = this.makeHomeBall();
-    this.launched = false;
-    this.resolved = false;
-    this.shotEnergyMeV = 0;
+    resetShotState(this.shot);
     this.updateEnergyReadout(0);
   }
 
@@ -272,8 +296,9 @@ export class Game {
   }
 
   private beginDrag(p: Vec2): void {
-    // Only start a drag while the ball sits at home (no shot in flight).
-    if (this.launched) return;
+    // Only start a drag while the ball sits at home in a fresh shot (no shot
+    // launched and none still resolving).
+    if (!isFreshShot(this.shot)) return;
     // Drag from ANYWHERE on the field: a pointer-down anywhere starts charging.
     // The pull is always measured from the ball's home position.
     this.dragging = true;
@@ -297,10 +322,8 @@ export class Game {
       return;
     }
     // Lock in the energy for this shot from the pull strength, then launch.
-    this.shotEnergyMeV = pullToEnergy(dist, MAX_PULL);
+    launchShot(this.shot, pullToEnergy(dist, MAX_PULL));
     this.ball.vel = dragToVelocity(drag, MAX_PULL);
-    this.launched = true;
-    this.resolved = false;
 
     // Feel: a launch kick scaled by pull strength, plus the launch sound.
     const strength = Math.min(dist, MAX_PULL) / MAX_PULL;
@@ -341,11 +364,11 @@ export class Game {
       if (this.flash < 0) this.flash = 0;
     }
 
-    if (!this.launched) return;
+    if (!this.shot.launched) return;
 
     step(this.ball, this.bounds, dt);
 
-    if (!this.resolved) {
+    if (!this.shot.resolved) {
       if (hitTest(this.detector, this.ball)) {
         this.resolveShot(this.detector);
         return;
@@ -359,12 +382,12 @@ export class Game {
   }
 
   private resolveShot(detector: Detector): void {
-    this.resolved = true;
-    const species = drawNeutrino(this.shotEnergyMeV);
+    resolveShotState(this.shot);
+    const species = drawNeutrino(this.shot.shotEnergyMeV);
     const observation: Observation = {
       species,
       detector,
-      energyMeV: this.shotEnergyMeV,
+      energyMeV: this.shot.shotEnergyMeV,
     };
 
     if (species === RARE_SPECIES) {
@@ -610,7 +633,7 @@ export class Game {
     // Glow that hints the ball's energy while dragging.
     const energyMeV = this.dragging
       ? pullToEnergy(dragDistance(this.currentDrag()), MAX_PULL)
-      : this.shotEnergyMeV;
+      : this.shot.shotEnergyMeV;
     const glow = energyMeV > 0 ? this.bandColor(energyToBand(energyMeV).id) : "#9fb3ff";
 
     const grad = ctx.createRadialGradient(
@@ -632,7 +655,7 @@ export class Game {
     ctx.stroke();
 
     // At-rest ring hint when the ball is ready to shoot.
-    if (!this.launched && !this.dragging) {
+    if (!this.shot.launched && !this.dragging) {
       ctx.beginPath();
       ctx.arc(ball.pos.x, ball.pos.y, ball.radius + 6, 0, Math.PI * 2);
       ctx.strokeStyle = "rgba(159,179,255,0.5)";
