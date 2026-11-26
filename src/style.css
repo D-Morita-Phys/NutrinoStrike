@@ -1,0 +1,149 @@
+:root {
+  color-scheme: dark;
+  --bg: #080c1c;
+  --panel-bg: #141a33;
+  --text: #e8ecff;
+  --muted: #9fb0d8;
+  --accent: #9fb3ff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  /* Stop the page from scrolling/panning while dragging on touch screens. */
+  touch-action: none;
+}
+
+.masthead {
+  text-align: center;
+  padding: 1.2rem 1rem 0.4rem;
+}
+
+.masthead h1 {
+  margin: 0;
+  font-size: 1.8rem;
+  letter-spacing: 0.02em;
+}
+
+.tagline {
+  margin: 0.3rem 0 0;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.layout {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5rem;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 1rem;
+}
+
+.stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+#game-canvas {
+  border-radius: 14px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  background: #0b1026;
+  touch-action: none;
+  cursor: grab;
+}
+
+.energy-readout {
+  margin: 0;
+  min-height: 1.4rem;
+  font-size: 0.95rem;
+  color: var(--accent);
+  text-align: center;
+}
+
+.panel {
+  width: 320px;
+  max-width: 100%;
+  background: var(--panel-bg);
+  border-radius: 14px;
+  padding: 1rem 1.2rem;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+
+.panel h2 {
+  font-size: 1rem;
+  margin: 1rem 0 0.5rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.panel h2:first-child {
+  margin-top: 0;
+}
+
+.result {
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 10px;
+  padding: 0.75rem;
+  min-height: 3.5rem;
+}
+
+.result-title {
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.35rem;
+}
+
+.result-detail {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.result-desc {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin-top: 0.35rem;
+}
+
+.result-swatch {
+  display: inline-block;
+  width: 0.9rem;
+  height: 0.9rem;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  flex: 0 0 auto;
+}
+
+.history {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.history li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--text);
+}
+
+.howto p {
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
