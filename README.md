@@ -114,6 +114,25 @@ The lottery itself (`src/game/lottery.ts`: `pullToEnergy`, `energyToBand`,
 and input (`src/render/game.ts`) read from this data and do not need to change
 when you rebalance the drop ratios.
 
+## Deploying to GitHub Pages
+
+The game is published as a GitHub Pages project page at
+[https://d-morita-phys.github.io/NutrinoStrike/](https://d-morita-phys.github.io/NutrinoStrike/).
+
+Deployment is automated with GitHub Actions (`.github/workflows/deploy.yml`):
+every push to the `main` branch builds the site and publishes `dist/` to Pages.
+You can also trigger it manually from the Actions tab (`workflow_dispatch`).
+
+One-time setup (a repository maintainer has to do this once in the GitHub UI):
+
+1. Open the repository **Settings → Pages**.
+2. Under **Build and deployment**, set **Source** to **GitHub Actions**.
+
+After that, pushing to `main` deploys automatically. Because the site lives
+under the `/NutrinoStrike/` subpath, `vite.config.ts` sets `base` to
+`/NutrinoStrike/` for production builds only (`npm run dev` still serves from
+`/`), so assets resolve correctly on Pages.
+
 ## Project layout
 
 ```
