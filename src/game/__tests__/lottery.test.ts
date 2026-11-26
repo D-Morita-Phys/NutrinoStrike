@@ -22,9 +22,20 @@ describe("pullToEnergy", () => {
     expect(pullToEnergy(100, 100)).toBe(MAX_ENERGY_MEV);
   });
 
-  it("maps the midpoint linearly", () => {
-    const expected = MIN_ENERGY_MEV + 0.5 * (MAX_ENERGY_MEV - MIN_ENERGY_MEV);
-    expect(pullToEnergy(50, 100)).toBeCloseTo(expected, 10);
+  it("maps the midpoint logarithmically (geometric mean of the range)", () => {
+    // A log map sends the midpoint to the geometric mean of MIN and MAX, not
+    // the arithmetic mean.
+    const geoMean = Math.sqrt(MIN_ENERGY_MEV * MAX_ENERGY_MEV);
+    expect(pullToEnergy(50, 100)).toBeCloseTo(geoMean, 6);
+  });
+
+  it("is monotonically increasing in pull strength", () => {
+    let prev = pullToEnergy(0, 100);
+    for (let d = 1; d <= 100; d++) {
+      const e = pullToEnergy(d, 100);
+      expect(e).toBeGreaterThan(prev);
+      prev = e;
+    }
   });
 
   it("clamps overdrawn pulls to the maximum", () => {
@@ -38,6 +49,57 @@ describe("pullToEnergy", () => {
   it("returns the minimum when maxPull is not usable", () => {
     expect(pullToEnergy(10, 0)).toBe(MIN_ENERGY_MEV);
     expect(pullToEnergy(10, -5)).toBe(MIN_ENERGY_MEV);
+  });
+});
+
+describe("pull strength selects the energy band", () => {
+  // Each of the three bands must be reachable from a realistic pull. With a log
+  // map the low/mid/high bands each occupy a third of the pull range, so a
+  // gentle, medium and strong pull land in low, mid and high respectively.
+  const maxPull = 220;
+
+  it("lands a gentle pull in the low band (reactor/geo regime)", () => {
+    // A short pull, well above the launch threshold but well below mid.
+    for (const frac of [0.05, 0.15, 0.25]) {
+      const energy = pullToEnergy(frac * maxPull, maxPull);
+      expect(energyToBand(energy).id).toBe("low");
+    }
+  });
+
+  it("lands a medium pull in the mid band (dsnb regime)", () => {
+    for (const frac of [0.4, 0.5, 0.6]) {
+      const energy = pullToEnergy(frac * maxPull, maxPull);
+      expect(energyToBand(energy).id).toBe("mid");
+    }
+  });
+
+  it("lands a strong pull in the high band (atmospheric/accelerator regime)", () => {
+    for (const frac of [0.75, 0.9, 1.0]) {
+      const energy = pullToEnergy(frac * maxPull, maxPull);
+      expect(energyToBand(energy).id).toBe("high");
+    }
+  });
+
+  it("keeps the minimum launch threshold inside the low band", () => {
+    // render/game.ts refuses to launch for a pull under 4 px; that shortest
+    // real shot must still be a low-band (reactor/geo) observation.
+    expect(energyToBand(pullToEnergy(4, maxPull)).id).toBe("low");
+  });
+
+  it("gives each band a comparable share of the pull range", () => {
+    // Sample the whole usable pull range and count how many samples fall in
+    // each band. No band should be starved (each must get a real slice).
+    const counts = { low: 0, mid: 0, high: 0 };
+    const samples = 1000;
+    for (let i = 0; i <= samples; i++) {
+      const energy = pullToEnergy((i / samples) * maxPull, maxPull);
+      counts[energyToBand(energy).id]++;
+    }
+    // With an even three-decade log split each band should get roughly a third;
+    // assert a generous lower bound so all three are comfortably reachable.
+    expect(counts.low).toBeGreaterThan(samples * 0.2);
+    expect(counts.mid).toBeGreaterThan(samples * 0.2);
+    expect(counts.high).toBeGreaterThan(samples * 0.2);
   });
 });
 

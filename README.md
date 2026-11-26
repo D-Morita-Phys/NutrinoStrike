@@ -57,8 +57,11 @@ instructions live in the "How to play" panel next to the play field.
 ## Game design
 
 Pull strength maps to a neutrino energy between `MIN_ENERGY_MEV` (1 MeV) and
-`MAX_ENERGY_MEV` (1000 MeV). That energy falls into one of three bands, and each
-band has its own weight table that favors different species:
+`MAX_ENERGY_MEV` (1000 MeV). The map is logarithmic, so each of the three energy
+bands occupies a comparable slice of the pull range: a gentle pull lands in the
+low band, a medium pull in the mid band, and a strong pull in the high band.
+That energy falls into one of three bands, and each band has its own weight
+table that favors different species:
 
 | Energy band | Range | Dominant species |
 | --- | --- | --- |

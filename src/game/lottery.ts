@@ -22,10 +22,24 @@ function clamp(value: number, min: number, max: number): number {
 /**
  * Map a normalized drag strength to an energy in MeV.
  *
+ * The mapping is LOGARITHMIC in energy: equal increments of pull strength cover
+ * equal RATIOS of energy. Because the energy range [1, 1000] MeV spans three
+ * decades and the band boundaries (10 and 100 MeV) sit one decade apart, each
+ * band occupies an equal, usable slice of the pull range:
+ *
+ *   strength 0.00 -> 1 MeV      (low band start)
+ *   strength 0.33 -> 10 MeV     (low -> mid boundary)
+ *   strength 0.67 -> 100 MeV    (mid -> high boundary)
+ *   strength 1.00 -> 1000 MeV   (high band end)
+ *
+ * A linear map instead collapses the low and mid bands into under ~10% of the
+ * pull range, making a low-energy (reactor/geo) shot effectively unreachable.
+ * The endpoints still map exactly to MIN/MAX so callers that depend on the
+ * boundary behavior are unaffected.
+ *
  * @param pullDistance how far the ball was pulled back (any unit).
  * @param maxPull the pull distance that corresponds to maximum strength.
- * @returns energy in [MIN_ENERGY_MEV, MAX_ENERGY_MEV]. Linear in the normalized
- *          strength pullDistance / maxPull, clamped at both ends.
+ * @returns energy in [MIN_ENERGY_MEV, MAX_ENERGY_MEV].
  */
 export function pullToEnergy(pullDistance: number, maxPull: number): number {
   if (!(maxPull > 0)) {
@@ -33,7 +47,11 @@ export function pullToEnergy(pullDistance: number, maxPull: number): number {
     return MIN_ENERGY_MEV;
   }
   const strength = clamp(pullDistance / maxPull, 0, 1);
-  return MIN_ENERGY_MEV + strength * (MAX_ENERGY_MEV - MIN_ENERGY_MEV);
+  // energy = MIN * (MAX / MIN)^strength. Clamp the endpoints exactly so that
+  // strength 0 -> MIN and strength 1 -> MAX despite floating-point rounding.
+  if (strength <= 0) return MIN_ENERGY_MEV;
+  if (strength >= 1) return MAX_ENERGY_MEV;
+  return MIN_ENERGY_MEV * Math.pow(MAX_ENERGY_MEV / MIN_ENERGY_MEV, strength);
 }
 
 /**

@@ -85,6 +85,8 @@ export class Game {
   private readonly history: Observation[] = [];
   private lastTime = 0;
   private rafId = 0;
+  /** Pending reset timeout after a resolved shot, so stop() can clear it. */
+  private resetTimeoutId = 0;
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -128,6 +130,11 @@ export class Game {
   /** Stop the loop and detach listeners. Useful for teardown/tests. */
   stop(): void {
     cancelAnimationFrame(this.rafId);
+    if (this.resetTimeoutId !== 0) {
+      window.clearTimeout(this.resetTimeoutId);
+      this.resetTimeoutId = 0;
+    }
+    this.detachInput();
   }
 
   // --- Setup helpers -------------------------------------------------------
@@ -163,6 +170,16 @@ export class Game {
     this.canvas.addEventListener("touchend", this.onTouchEnd, {
       passive: false,
     });
+  }
+
+  private detachInput(): void {
+    this.canvas.removeEventListener("mousedown", this.onDown);
+    window.removeEventListener("mousemove", this.onMove);
+    window.removeEventListener("mouseup", this.onUp);
+
+    this.canvas.removeEventListener("touchstart", this.onTouchStart);
+    this.canvas.removeEventListener("touchmove", this.onTouchMove);
+    this.canvas.removeEventListener("touchend", this.onTouchEnd);
   }
 
   /** Map a client (page) coordinate to canvas space. */
@@ -290,7 +307,10 @@ export class Game {
     this.renderHistory();
 
     // Give the ball a brief visible bounce, then reset for the next shot.
-    window.setTimeout(() => this.resetBall(), 450);
+    this.resetTimeoutId = window.setTimeout(() => {
+      this.resetTimeoutId = 0;
+      this.resetBall();
+    }, 450);
   }
 
   // --- Result UI -----------------------------------------------------------
