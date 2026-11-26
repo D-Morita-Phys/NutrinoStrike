@@ -28,6 +28,23 @@ export const FRICTION = 0.5;
  */
 export const MAX_PULL = 220;
 
+/**
+ * Launch speed in pixels/second at the weakest usable pull.
+ *
+ * A pull-to-speed map that started at zero made the slowest shots fall far
+ * short of the detectors: under GRAVITY and FRICTION, a near-zero pull rises
+ * only a fraction of the ~363 px needed to reach the targets, so low-energy
+ * (reactor / geo) shots could never register an observation. Launch speed is
+ * therefore interpolated from this floor (weakest pull) up to
+ * MAX_LAUNCH_SPEED (full pull) so EVERY shot carries enough speed to reach the
+ * detector band while stronger pulls still fly noticeably faster.
+ *
+ * This floor is a SPEED knob only. It does not touch pullToEnergy, so the
+ * pull-strength -> energy-band mapping (weak = low band, strong = high band) is
+ * unchanged; weak shots simply travel fast enough to be observed.
+ */
+export const MIN_LAUNCH_SPEED = 1100;
+
 /** Launch speed in pixels/second at full pull strength. */
 export const MAX_LAUNCH_SPEED = 1600;
 
@@ -77,24 +94,30 @@ export function dragDistance(drag: Vec2): number {
  *
  * Monster Strike-style: the player pulls the ball DOWN and releases, so the
  * ball launches in the OPPOSITE direction of the drag (pull down -> fly up).
- * The launch speed is proportional to the drag distance, normalized against
- * maxPull and clamped to [0, 1], then scaled by MAX_LAUNCH_SPEED.
+ * The launch speed scales with the drag distance, normalized against maxPull
+ * and clamped to [0, 1], then interpolated from minSpeed (weakest pull) up to
+ * maxSpeed (full pull). The non-zero floor guarantees even the slowest shot
+ * carries enough speed to reach the detectors; a zero-length drag still
+ * launches nothing.
  *
  * @param drag the vector from the ball to the current pointer (the pull).
  * @param maxPull pull distance mapping to full strength. Defaults to MAX_PULL.
  * @param maxSpeed launch speed at full strength. Defaults to MAX_LAUNCH_SPEED.
+ * @param minSpeed launch speed at the weakest usable pull. Defaults to
+ *                 MIN_LAUNCH_SPEED.
  */
 export function dragToVelocity(
   drag: Vec2,
   maxPull: number = MAX_PULL,
   maxSpeed: number = MAX_LAUNCH_SPEED,
+  minSpeed: number = MIN_LAUNCH_SPEED,
 ): Vec2 {
   const dist = dragDistance(drag);
   if (dist === 0 || !(maxPull > 0)) {
     return { x: 0, y: 0 };
   }
   const strength = clamp(dist / maxPull, 0, 1);
-  const speed = strength * maxSpeed;
+  const speed = minSpeed + strength * (maxSpeed - minSpeed);
   // Opposite direction of the drag, unit vector scaled by speed.
   return { x: (-drag.x / dist) * speed, y: (-drag.y / dist) * speed };
 }

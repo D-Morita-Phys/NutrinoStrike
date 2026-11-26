@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  GRAVITY,
+  FRICTION,
   MAX_LAUNCH_SPEED,
+  MIN_LAUNCH_SPEED,
   MAX_PULL,
   createBall,
   dragDistance,
@@ -9,6 +12,7 @@ import {
   speed,
   step,
 } from "../physics.ts";
+import { createDetectors, hitTest } from "../detectors.ts";
 
 describe("dragDistance", () => {
   it("is the Euclidean length of the drag vector", () => {
@@ -26,9 +30,18 @@ describe("dragToVelocity", () => {
     expect(v.y).toBeCloseTo(-MAX_LAUNCH_SPEED, 6);
   });
 
-  it("scales launch speed with drag distance up to maxPull", () => {
+  it("interpolates launch speed from the floor up to max with drag distance", () => {
+    // A tiny-but-nonzero pull launches at the MIN_LAUNCH_SPEED floor so even
+    // the weakest shot can reach the detectors.
+    const faint = dragToVelocity({ x: 0, y: 0.0001 });
+    expect(Math.hypot(faint.x, faint.y)).toBeCloseTo(MIN_LAUNCH_SPEED, 3);
+
+    // A half pull sits halfway between the floor and the max.
     const half = dragToVelocity({ x: 0, y: MAX_PULL / 2 });
-    expect(Math.hypot(half.x, half.y)).toBeCloseTo(MAX_LAUNCH_SPEED / 2, 6);
+    expect(Math.hypot(half.x, half.y)).toBeCloseTo(
+      MIN_LAUNCH_SPEED + (MAX_LAUNCH_SPEED - MIN_LAUNCH_SPEED) / 2,
+      6,
+    );
   });
 
   it("caps launch speed at full strength for overdrawn pulls", () => {
@@ -103,6 +116,56 @@ describe("isAtRest", () => {
     const ball = createBall(200, 100);
     ball.vel = { x: 0, y: 0 };
     expect(isAtRest(ball, bounds)).toBe(false);
+  });
+});
+
+describe("detector reachability", () => {
+  // Mirror the live game layout (see render/game.ts): a 480x720 field with the
+  // ball resting at 82% height, launched straight up at the detector column.
+  const WIDTH = 480;
+  const HEIGHT = 720;
+  const HOME_Y = HEIGHT * 0.82;
+  const bounds = { width: WIDTH, height: HEIGHT };
+  const detectors = createDetectors(WIDTH, HEIGHT);
+
+  /**
+   * Launch the ball straight up at the given speed from the detector's x and
+   * step the physics until it either overlaps the detector or falls back to
+   * its start height. Returns true if it registered a hit.
+   */
+  function verticalShotHits(launchSpeed: number): boolean {
+    const target = detectors[0];
+    const ball = createBall(target.x, HOME_Y);
+    ball.vel = { x: 0, y: -launchSpeed };
+    const dt = 1 / 120;
+    for (let i = 0; i < 2000; i++) {
+      step(ball, bounds, dt);
+      if (hitTest(target, ball)) return true;
+      // Give up once the ball has peaked and returned below its start.
+      if (ball.vel.y > 0 && ball.pos.y >= HOME_Y) break;
+    }
+    return false;
+  }
+
+  it("has gravity and friction that would otherwise starve weak shots", () => {
+    // Sanity anchor for the balance: the layout demands a fast launch.
+    expect(GRAVITY).toBeGreaterThan(0);
+    expect(FRICTION).toBeGreaterThan(0);
+    expect(FRICTION).toBeLessThan(1);
+  });
+
+  it("reaches a detector at the weakest usable pull (low band)", () => {
+    // A barely-there drag launches at the floor speed.
+    const faint = dragToVelocity({ x: 0, y: 0.0001 });
+    expect(verticalShotHits(Math.hypot(faint.x, faint.y))).toBe(true);
+  });
+
+  it("reaches a detector across low, mid and high band pulls", () => {
+    // Representative pulls inside each logarithmic energy band third.
+    for (const frac of [1 / 6, 1 / 2, 5 / 6, 1]) {
+      const v = dragToVelocity({ x: 0, y: MAX_PULL * frac });
+      expect(verticalShotHits(Math.hypot(v.x, v.y))).toBe(true);
+    }
   });
 });
 
