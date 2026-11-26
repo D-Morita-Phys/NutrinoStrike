@@ -43,6 +43,13 @@ export interface NeutrinoInfo {
   readonly nameJa: string;
   /** Short one-line description. */
   readonly description: string;
+  /**
+   * Full Japanese explanation shown on the result and collection screens. One
+   * natural, scientifically sound paragraph per species. This is the single
+   * place to edit the Japanese copy; keeping it here (pure data) means a
+   * completeness test can guarantee none ever goes missing.
+   */
+  readonly descriptionJa: string;
   /** CSS color used when this species is drawn or shown in the UI. */
   readonly color: string;
 }
@@ -53,6 +60,11 @@ export const NEUTRINO_INFO: Readonly<Record<NeutrinoSpecies, NeutrinoInfo>> = {
     name: "Reactor neutrino",
     nameJa: "原子炉ニュートリノ",
     description: "Electron antineutrinos from nuclear reactor fission. A few MeV.",
+    descriptionJa:
+      "原子力発電所の炉心では、ウランなどの核分裂で生まれた不安定な原子核が" +
+      "ベータ崩壊を起こし、電子ニュートリノの反粒子（電子反ニュートリノ）を" +
+      "大量に放出します。エネルギーは数MeV程度と低く、KamLANDはこの原子炉" +
+      "ニュートリノを精密に観測してニュートリノ振動を確かめました。",
     color: "#4fc3f7",
   },
   geo: {
@@ -60,6 +72,11 @@ export const NEUTRINO_INFO: Readonly<Record<NeutrinoSpecies, NeutrinoInfo>> = {
     name: "Geoneutrino",
     nameJa: "地球ニュートリノ",
     description: "Antineutrinos from radioactive decay inside the Earth. A few MeV.",
+    descriptionJa:
+      "地球の内部に含まれるウランやトリウム、カリウムといった放射性元素が" +
+      "崩壊するときに放出される反ニュートリノです。地球ニュートリノを数える" +
+      "ことで、地球内部がどれだけの熱を自ら生み出しているかを推定でき、地球" +
+      "科学の手がかりになります。エネルギーは数MeVと低い領域に入ります。",
     color: "#8d6e63",
   },
   dsnb: {
@@ -67,6 +84,11 @@ export const NEUTRINO_INFO: Readonly<Record<NeutrinoSpecies, NeutrinoInfo>> = {
     name: "Supernova diffuse background neutrino",
     nameJa: "超新星背景ニュートリノ",
     description: "Faint background from all past supernovae. Tens of MeV.",
+    descriptionJa:
+      "宇宙の歴史の中で起きた無数の超新星爆発が放ったニュートリノが、今も薄く" +
+      "宇宙空間に満ちています。これを超新星背景ニュートリノ（DSNB）と呼び、" +
+      "数十MeVの中エネルギー帯に分布します。信号は非常に弱く、Super-Kamiokande" +
+      "などで世界中の研究者が初観測を目指している、まだ見ぬ背景放射です。",
     color: "#ba68c8",
   },
   atmospheric: {
@@ -74,6 +96,11 @@ export const NEUTRINO_INFO: Readonly<Record<NeutrinoSpecies, NeutrinoInfo>> = {
     name: "Atmospheric neutrino",
     nameJa: "大気ニュートリノ",
     description: "Produced by cosmic-ray showers in the atmosphere. Hundreds of MeV and up.",
+    descriptionJa:
+      "宇宙から降り注ぐ高エネルギーの陽子（宇宙線）が大気中の原子核と衝突する" +
+      "と、パイ中間子などが生まれ、それらが崩壊して大気ニュートリノが作られます。" +
+      "エネルギーは数百MeVから上に広がり、地球を突き抜けて飛来する間にミュー型" +
+      "からタウ型へ姿を変える「ニュートリノ振動」の決定的な証拠となりました。",
     color: "#81c784",
   },
   accelerator: {
@@ -81,6 +108,11 @@ export const NEUTRINO_INFO: Readonly<Record<NeutrinoSpecies, NeutrinoInfo>> = {
     name: "Accelerator neutrino",
     nameJa: "加速器ニュートリノ",
     description: "Beams made at particle accelerators. Hundreds of MeV to GeV.",
+    descriptionJa:
+      "加速器で陽子を標的に撃ち込み、生まれた粒子の崩壊から人工的に作り出す" +
+      "ニュートリノビームです。日本ではJ-PARCで作ったビームを295km離れた" +
+      "Super-Kamiokandeへ送るT2K実験が有名で、狙った方向・タイミングで飛ばせる" +
+      "ため、ニュートリノ振動を精密に測定できます。数百MeVからGeV級の高エネルギー。",
     color: "#ffb74d",
   },
   supernovaBurst: {
@@ -88,6 +120,12 @@ export const NEUTRINO_INFO: Readonly<Record<NeutrinoSpecies, NeutrinoInfo>> = {
     name: "Supernova burst neutrino",
     nameJa: "超新星爆発ニュートリノ",
     description: "Intense burst from a nearby core-collapse supernova. Very rare.",
+    descriptionJa:
+      "重い星が一生の最後に自分の重力で潰れる重力崩壊型超新星では、放出される" +
+      "エネルギーの実に99%がニュートリノとして数秒間で一気に飛び出します。" +
+      "1987年の超新星1987Aではカミオカンデがこの爆発ニュートリノを世界で初めて" +
+      "捉え、ニュートリノ天文学の幕を開けました。近くで爆発が起きないと観測でき" +
+      "ない、めったに引けない大当たりです。",
     color: "#e57373",
   },
 };

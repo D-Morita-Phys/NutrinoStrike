@@ -8,7 +8,15 @@
 
 import { createSceneMachine, type SceneId } from "../game/scenes.ts";
 import { type DetectorId } from "../game/detectors.ts";
-import { Game, type GameUi } from "../render/game.ts";
+import { Game, type GameUi, type Observation } from "../render/game.ts";
+import {
+  isDiscovered,
+  load,
+  markDiscovered,
+  save,
+  type CollectionState,
+} from "../game/collection.ts";
+import { renderCollection, renderResultCard } from "./content.ts";
 import { createTopBar } from "./menu.ts";
 import { createScreens } from "./screens.ts";
 
@@ -18,6 +26,10 @@ export function mountApp(root: HTMLElement): void {
   // Default target until the player picks one on the select screen.
   let selectedDetector: DetectorId = "superK";
 
+  // Collection (zukan) state, persisted to localStorage via the pure store.
+  const storage = window.localStorage;
+  let collection: CollectionState = load(storage);
+
   const screens = createScreens({
     onStart: () => machine.go("select"),
     onOpenCollection: () => machine.go("collection"),
@@ -25,6 +37,8 @@ export function mountApp(root: HTMLElement): void {
       selectedDetector = id;
       machine.go("play");
     },
+    onReplay: () => machine.go("play"),
+    onBackToStart: () => machine.go("start"),
   });
 
   const topBar = createTopBar({
@@ -53,11 +67,24 @@ export function mountApp(root: HTMLElement): void {
   root.innerHTML = "";
   root.append(topBar.element, screenStack);
 
+  // Handle a resolved shot: record the discovery (with first-time detection),
+  // persist it, populate the result screen, and navigate there.
+  const onResolve = (obs: Observation): void => {
+    const firstTime = !isDiscovered(collection, obs.species);
+    if (firstTime) {
+      collection = markDiscovered(collection, obs.species);
+      save(storage, collection);
+    }
+    renderResultCard(screens.resultBody, obs, firstTime);
+    machine.go("result");
+  };
+
   // Construct the Game once against the single, persistent canvas.
   const ui: GameUi = {
     result: screens.resultBox,
     history: screens.history,
     energyReadout: screens.energyReadout,
+    onResolve,
   };
   const game = new Game(screens.canvas, ui);
   let gameRunning = false;
@@ -86,6 +113,9 @@ export function mountApp(root: HTMLElement): void {
       startGame();
     } else {
       stopGame();
+    }
+    if (scene === "collection") {
+      renderCollection(screens.collectionBody, collection);
     }
   };
 

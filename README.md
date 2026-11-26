@@ -1,13 +1,43 @@
 # Neutrino Strike
 
-A Monster Strike-style neutrino gacha that runs in the browser. You grab a
-glowing neutrino ball, drag it DOWN, and release to launch it UP into a
-detector (Super-Kamiokande or KamLAND). How far you pulled sets the neutrino
-energy, and a weighted lottery for that energy band decides which species you
-actually observe. Reactor and geoneutrinos dominate the low band, the diffuse
-supernova background dominates the mid band, and atmospheric and accelerator
-neutrinos dominate the high band. A supernova burst neutrino is the rare drop
-that can turn up in any band.
+A Monster Strike-style neutrino gacha that runs in the browser. You pick a
+detector, grab a glowing neutrino ball, drag it DOWN, and release to launch it
+UP into the detector you chose (Super-Kamiokande or KamLAND). How far you
+pulled sets the neutrino energy, and a weighted lottery for that energy band
+decides which species you actually observe. Reactor and geoneutrinos dominate
+the low band, the diffuse supernova background dominates the mid band, and
+atmospheric and accelerator neutrinos dominate the high band. A supernova burst
+neutrino is the rare drop that can turn up in any band and sets off a special
+celebration. Every species you observe is recorded in a collection (zukan) that
+persists across reloads.
+
+## Screen flow
+
+The game is a lightweight multi-screen single-page app driven by a small,
+pure scene state machine (`src/game/scenes.ts`); there is no framework or
+router. The screens flow:
+
+```
+start  ->  select detector  ->  play  ->  result  ->  collection
+```
+
+- **Start**: title plus スタート (go to detector select) and コレクション
+  (open the zukan).
+- **Select detector**: choose KamLAND or Super-Kamiokande. Each choice shows a
+  self-generated SVG illustration (no image files). The detector you pick
+  becomes the single on-field target.
+- **Play**: the drag-to-launch play field.
+- **Result**: shown when a shot resolves. It presents the observed species with
+  its Japanese name, color swatch, the detector it was seen at, the energy, and
+  a full Japanese description, plus もういちど (replay with the same detector)
+  and コレクションを見る (open the zukan).
+- **Collection / zukan**: all six species; discovered ones show their name,
+  color, and Japanese description, undiscovered ones are locked as `???`
+  silhouettes. It also shows the discovery count (X / 6) and completion rate.
+
+A persistent hamburger menu sits at the top of every screen with three actions:
+やり直し (restart to the start screen), 音量調整 (a volume slider wired to the
+audio engine), and コレクション (open the zukan).
 
 ## Tech stack
 
@@ -15,7 +45,10 @@ that can turn up in any band.
 - TypeScript
 - Canvas 2D for rendering (no game engine; physics is a small self-written
   position/velocity integrator with wall bounce)
-- Vitest for unit tests of the pure lottery/energy logic
+- Web Audio API for all sound (synthesized at runtime, no audio files)
+- A small, pure scene state machine (no framework or router)
+- Vitest for unit tests of the pure logic (lottery, physics, detectors, scenes,
+  and the collection store)
 
 ## Prerequisites
 
@@ -40,19 +73,45 @@ development.
 
 ## Controls
 
-- Press (mouse) or touch the glowing ball at the bottom of the play field.
-- Drag **DOWN** to pull. An on-screen energy readout and an aim guide appear
-  while you drag, showing the launch energy the current pull would produce.
+- Press (mouse) or touch **anywhere** on the play field to start charging. You
+  do not need to grab the ball itself; the pull is always measured from the
+  ball's home position.
+- Drag **DOWN** to pull. While you drag, a translucent launch-direction arrow
+  appears whose length and thickness grow with pull strength, so the arrow size
+  reads the launch energy. An energy readout and band color accompany it.
 - Release to launch the ball **UP**. The farther you pulled, the faster the
-  launch and the higher the neutrino energy.
+  launch and the higher the neutrino energy. Launch and detector hits kick off
+  a short, decaying screen shake and a synthesized sound.
 - Both mouse and touch input are supported. On touch screens the page does not
   scroll while you drag.
 
-When the ball strikes a detector, the launch energy is converted to an energy
-band, the lottery draws a species using that band's weights, and the result is
-shown in the "Latest observation" panel. The last 8 observations (species,
-detector, and energy) are listed in the "History" panel. Brief on-screen
-instructions live in the "How to play" panel next to the play field.
+When the ball strikes the chosen detector, the launch energy is converted to an
+energy band, the lottery draws a species using that band's weights, and the app
+switches to the result screen with the species, detector, energy, and a full
+Japanese description. Each observation is also recorded to the collection. If
+the draw is a supernova burst, a rare celebration plays: a canvas flash, a
+stronger shake, a distinct synthesized cue, and a レア発見！ banner on the
+result screen. The first time you observe a species, the result screen shows a
+NEW! badge.
+
+### Audio
+
+All sound is synthesized at runtime with the Web Audio API (oscillators, gain
+envelopes, and noise bursts) in `src/game/audio.ts`. There are **no audio files
+and no external URLs**, so the game works offline. The AudioContext is created
+lazily and resumed on your first interaction to satisfy browser autoplay
+policies. The hamburger 音量調整 slider sets the master volume, which is
+persisted to `localStorage` and restored on the next visit.
+
+### Collection and persistence
+
+The collection (zukan) tracks which of the six species you have discovered.
+State is stored in `localStorage` under a namespaced key through the pure store
+in `src/game/collection.ts`, which takes an injectable `Storage`-like object so
+it unit-tests without a browser. The store tolerates malformed or older stored
+JSON (it keeps the valid parts and ignores the rest), so a format change never
+wipes your progress. The collection page shows the discovered count (X / 6) and
+completion percentage.
 
 ## Game design
 
@@ -88,6 +147,12 @@ The six observable species:
 The two detectors (KamLAND themed to the low-energy regime, Super-Kamiokande to
 the high-energy regime) are cosmetic targets. The observed species is always
 decided by the lottery from the launch energy, not by which detector you hit.
+
+The Japanese explanation shown for each species on the result and collection
+screens lives in one easy-to-edit place: the `descriptionJa` field of
+`NEUTRINO_INFO` in `src/game/neutrinos.ts`. It is pure data, and a unit test
+asserts every species has a non-empty `descriptionJa`, so the copy can never
+silently go missing. Edit the strings there to change the Japanese text.
 
 ## Tuning the balance
 
@@ -139,14 +204,27 @@ under the `/NutrinoStrike/` subpath, `vite.config.ts` sets `base` to
 NutrinoStrike/
   index.html              entry HTML (mounts #app)
   src/
-    main.ts               builds the page layout and starts the game loop
-    style.css             page and panel styling
+    main.ts               locates #app and mounts the app shell
+    style.css             page, screen, menu, result, and zukan styling
     game/                 pure logic (no DOM)
-      neutrinos.ts        species data + energy bands + weight tables (balance knobs)
+      neutrinos.ts        species data + Japanese descriptions + energy bands + weight tables (balance knobs)
       lottery.ts          pull -> energy -> band -> weighted draw
       physics.ts          ball integration and drag -> velocity/energy
       detectors.ts        Super-Kamiokande / KamLAND targets
-      __tests__/          Vitest unit tests for the lottery/energy logic
+      scenes.ts           pure scene (screen) state machine
+      collection.ts       pure discovery store (injectable Storage; localStorage-backed)
+      audio.ts            Web Audio synthesis engine + volume persistence helpers
+      __tests__/          Vitest unit tests (lottery, physics, detectors, scenes, collection)
+    ui/                   DOM screens (no canvas drawing)
+      app.ts              mounts the shell, wires the scene machine, Game, and collection
+      screens.ts          the five screen containers (start/select/play/result/collection)
+      menu.ts             persistent top bar + hamburger menu
+      content.ts          renders the result card and the zukan grid from pure data
+      detectorArt.ts      self-generated SVG illustrations for the detectors
     render/
-      game.ts             Canvas drawing, pointer/touch input, game loop wiring
+      game.ts             Canvas drawing, pointer/touch input, shake/flash, game loop
 ```
+
+All visuals are self-generated (inline SVG and Canvas/CSS) and all audio is
+synthesized at runtime; the game ships with no external image or audio assets so
+it runs offline on the GitHub Pages subpath.

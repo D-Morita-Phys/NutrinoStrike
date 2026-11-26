@@ -21,6 +21,10 @@ export interface StartScreenHandlers {
    * becomes the single on-field target for the shot.
    */
   onSelectDetector(id: DetectorId): void;
+  /** もういちど: replay the play scene with the same selected detector. */
+  onReplay(): void;
+  /** Back from a screen to the start screen. */
+  onBackToStart(): void;
 }
 
 export interface Screens {
@@ -35,6 +39,10 @@ export interface Screens {
   readonly energyReadout: HTMLElement;
   readonly resultBox: HTMLElement;
   readonly history: HTMLElement;
+  /** Container the app fills with the resolved observation's details. */
+  readonly resultBody: HTMLElement;
+  /** Container the app fills with the zukan grid + stats. */
+  readonly collectionBody: HTMLElement;
 }
 
 function screen(id: string, extraClass = ""): HTMLElement {
@@ -176,22 +184,55 @@ export function createScreens(handlers: StartScreenHandlers): Screens {
   layout.append(stage, panel);
   play.appendChild(layout);
 
-  // --- Result screen (stub; FEAT-003 adds descriptions + buttons) ---
+  // --- Result screen: observed species + description + navigation ---
   const result = screen("result", "screen-result");
   const resultScreenHeading = document.createElement("h2");
   resultScreenHeading.className = "screen-heading";
-  resultScreenHeading.textContent = "けっか";
-  result.append(resultScreenHeading);
+  resultScreenHeading.textContent = "観測けっか";
 
-  // --- Collection screen (stub; FEAT-003 adds the zukan) ---
+  // The app fills this card with the resolved observation each time.
+  const resultBody = document.createElement("div");
+  resultBody.className = "result-card";
+
+  const replayBtn = document.createElement("button");
+  replayBtn.type = "button";
+  replayBtn.className = "btn btn-primary btn-lg";
+  replayBtn.textContent = "もういちど";
+  replayBtn.addEventListener("click", handlers.onReplay);
+
+  const seeCollectionBtn = document.createElement("button");
+  seeCollectionBtn.type = "button";
+  seeCollectionBtn.className = "btn btn-secondary btn-lg";
+  seeCollectionBtn.textContent = "コレクションを見る";
+  seeCollectionBtn.addEventListener("click", handlers.onOpenCollection);
+
+  const resultActions = document.createElement("div");
+  resultActions.className = "result-actions";
+  resultActions.append(replayBtn, seeCollectionBtn);
+
+  result.append(resultScreenHeading, resultBody, resultActions);
+
+  // --- Collection screen: the zukan (app renders the grid + stats) ---
   const collection = screen("collection", "screen-collection");
   const collectionHeading = document.createElement("h2");
   collectionHeading.className = "screen-heading";
-  collectionHeading.textContent = "コレクション";
-  const collectionNote = document.createElement("p");
-  collectionNote.className = "screen-note";
-  collectionNote.textContent = "見つけたニュートリノがここに並びます。";
-  collection.append(collectionHeading, collectionNote);
+  collectionHeading.textContent = "コレクション / 図鑑";
+
+  // The app fills this with the species grid and the discovery stats.
+  const collectionBody = document.createElement("div");
+  collectionBody.className = "collection-body";
+
+  const collectionBackBtn = document.createElement("button");
+  collectionBackBtn.type = "button";
+  collectionBackBtn.className = "btn btn-secondary btn-lg";
+  collectionBackBtn.textContent = "スタートにもどる";
+  collectionBackBtn.addEventListener("click", handlers.onBackToStart);
+
+  const collectionActions = document.createElement("div");
+  collectionActions.className = "collection-actions";
+  collectionActions.append(collectionBackBtn);
+
+  collection.append(collectionHeading, collectionBody, collectionActions);
 
   return {
     start,
@@ -203,5 +244,7 @@ export function createScreens(handlers: StartScreenHandlers): Screens {
     energyReadout,
     resultBox,
     history,
+    resultBody,
+    collectionBody,
   };
 }

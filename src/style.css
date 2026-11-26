@@ -421,3 +421,176 @@ button.menu-item:hover {
   font-size: 0.85rem;
   line-height: 1.45;
 }
+
+/* ---------------------------------------------------------------------------
+   Result screen (observed species + Japanese description + navigation)
+--------------------------------------------------------------------------- */
+.screen-result {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+}
+
+.result-card {
+  width: min(100%, 34rem);
+  background: var(--panel-bg);
+  border: 1px solid rgba(159, 179, 255, 0.2);
+  border-radius: 16px;
+  padding: 1.2rem 1.4rem;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+
+.result-card.is-rare {
+  border-color: #ffd479;
+  box-shadow: 0 0 0 1px rgba(255, 212, 121, 0.5),
+    0 12px 40px rgba(229, 115, 115, 0.35);
+}
+
+.rare-banner {
+  text-align: center;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: #0a0e20;
+  background: linear-gradient(90deg, #ffd479, #ffb74d, #e57373);
+  border-radius: 10px;
+  padding: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.result-card-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.result-swatch-lg {
+  width: 1.5rem;
+  height: 1.5rem;
+}
+
+.result-card-name-ja {
+  font-size: 1.3rem;
+  font-weight: 700;
+}
+
+.result-card-name-en {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.new-badge {
+  display: inline-block;
+  vertical-align: middle;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  color: #0a0e20;
+  background: #7cf7a0;
+  border-radius: 6px;
+  padding: 0.1rem 0.35rem;
+}
+
+.result-card-meta {
+  margin: 1rem 0 0.6rem;
+  color: var(--accent);
+  font-size: 0.9rem;
+}
+
+.result-card-desc {
+  margin: 0;
+  color: var(--text);
+  line-height: 1.7;
+}
+
+.result-actions,
+.collection-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  justify-content: center;
+  width: min(100%, 34rem);
+}
+
+/* ---------------------------------------------------------------------------
+   Collection / zukan screen
+--------------------------------------------------------------------------- */
+.screen-collection {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+}
+
+.collection-body {
+  width: min(100%, 48rem);
+}
+
+.collection-stats {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
+  font-weight: 700;
+}
+
+.collection-rate {
+  color: var(--accent);
+}
+
+.collection-bar {
+  margin: 0.5rem 0 1.2rem;
+  height: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.collection-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), #7cf7a0);
+  border-radius: 999px;
+  transition: width 0.3s ease;
+}
+
+.zukan-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+  gap: 1rem;
+}
+
+.zukan-card {
+  background: var(--panel-bg);
+  border: 1px solid rgba(159, 179, 255, 0.18);
+  border-radius: 14px;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.zukan-card.is-locked {
+  opacity: 0.7;
+}
+
+.zukan-swatch {
+  width: 1.3rem;
+  height: 1.3rem;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+}
+
+.zukan-card.is-locked .zukan-swatch {
+  filter: grayscale(1);
+}
+
+.zukan-name {
+  font-weight: 700;
+}
+
+.zukan-desc {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.6;
+}

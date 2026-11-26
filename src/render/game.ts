@@ -67,7 +67,16 @@ export interface GameUi {
   readonly result: HTMLElement;
   readonly history: HTMLElement;
   readonly energyReadout: HTMLElement;
+  /**
+   * Called when a shot resolves into an observation, so the app can switch to
+   * the dedicated result scene and record the discovery. Optional so the Game
+   * still works without an app wrapper (e.g. in isolated tests).
+   */
+  readonly onResolve?: (obs: Observation) => void;
 }
+
+/** The species treated as the rare drop with a special celebration effect. */
+const RARE_SPECIES: NeutrinoSpecies = "supernovaBurst";
 
 /** How fast the screen shake decays toward zero (higher = snappier). */
 const SHAKE_DECAY_PER_SEC = 6;
@@ -92,6 +101,10 @@ export class Game {
 
   // Screen-shake state (magnitude in pixels, decays to zero over time).
   private shake = 0;
+
+  // Full-canvas celebration flash (0..1 opacity), decays to zero. Triggered on
+  // a rare supernova-burst drop together with a stronger shake + special sound.
+  private flash = 0;
 
   private readonly audio = new AudioEngine();
 
@@ -322,6 +335,12 @@ export class Game {
       if (this.shake < 0.2) this.shake = 0;
     }
 
+    // Celebration flash fades out quickly.
+    if (this.flash > 0) {
+      this.flash -= dt * 1.6;
+      if (this.flash < 0) this.flash = 0;
+    }
+
     if (!this.launched) return;
 
     step(this.ball, this.bounds, dt);
@@ -341,18 +360,32 @@ export class Game {
 
   private resolveShot(detector: Detector): void {
     this.resolved = true;
-    this.addShake(16);
-    this.audio.play("hit");
     const species = drawNeutrino(this.shotEnergyMeV);
     const observation: Observation = {
       species,
       detector,
       energyMeV: this.shotEnergyMeV,
     };
+
+    if (species === RARE_SPECIES) {
+      // Rare supernova burst: a bigger celebration (flash + stronger shake +
+      // the sparkly special cue).
+      this.addShake(28);
+      this.flash = 1;
+      this.audio.play("special");
+    } else {
+      this.addShake(16);
+      this.audio.play("hit");
+    }
+
     this.showResult(observation);
     this.history.unshift(observation);
     if (this.history.length > MAX_HISTORY) this.history.pop();
     this.renderHistory();
+
+    // Notify the app so it can switch to the result scene and record the
+    // discovery in the collection.
+    this.ui.onResolve?.(observation);
 
     // Give the ball a brief visible bounce, then reset for the next shot.
     this.resetTimeoutId = window.setTimeout(() => {
@@ -436,6 +469,13 @@ export class Game {
     this.renderDetector();
     this.renderAimGuide();
     this.renderBall();
+
+    // Rare-drop celebration flash, painted over everything but kept tasteful
+    // (peaks well below full white and fades out fast).
+    if (this.flash > 0) {
+      ctx.fillStyle = `rgba(255, 245, 210, ${Math.min(this.flash, 1) * 0.55})`;
+      ctx.fillRect(-20, -20, bounds.width + 40, bounds.height + 40);
+    }
 
     ctx.restore();
   }
