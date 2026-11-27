@@ -17,14 +17,14 @@ export const CAMERA_ZOOM_MIN = 1.0;
 export const CAMERA_ZOOM_MAX = 2.2;
 
 /**
- * Depth render-scale at the ball's home (bottom of the field): the ball reads
+ * Depth render-scale at the front (depth 0, near the player): the ball reads
  * slightly LARGER up close.
  */
 export const DEPTH_SCALE_NEAR = 1.18;
 
 /**
- * Depth render-scale when the ball reaches the detector (top of the field): the
- * ball reads SMALLER as it recedes into depth toward the target.
+ * Depth render-scale at the detector plane (depth 1, the back): the ball reads
+ * SMALLER as it recedes into depth toward the target.
  */
 export const DEPTH_SCALE_FAR = 0.62;
 
@@ -62,34 +62,33 @@ export function zoomForProgress(
 }
 
 /**
- * Render scale for the launched ball based on how far it has travelled from its
- * home toward the detector. `progress` is 0 at home (near, larger) and 1 at the
- * detector (far, smaller). The scale is interpolated between DEPTH_SCALE_NEAR
- * and DEPTH_SCALE_FAR and is always strictly positive. This is a RENDER scale
- * only; ball.radius used by physics/hitTest is never changed.
+ * Render scale for the launched ball from its depth progress. `depth` is 0 at
+ * the front (near, larger) and 1 at the detector plane (far, smaller). The
+ * scale is interpolated between DEPTH_SCALE_NEAR and DEPTH_SCALE_FAR and is
+ * always strictly positive. This is a RENDER scale only; ball.radius used by
+ * physics/hit resolution is never changed.
  */
 export function depthScale(
-  progress: number,
+  depth: number,
   near: number = DEPTH_SCALE_NEAR,
   far: number = DEPTH_SCALE_FAR,
 ): number {
-  const t = clamp01(progress);
+  const t = clamp01(depth);
   return near + (far - near) * t;
 }
 
 /**
- * Normalize a world y position to 0..1 flight progress between the home y
- * (progress 0) and the detector y (progress 1). Values outside the span are
- * clamped so the ball bouncing past the detector still reads as "arrived".
+ * Clamp a depth value to the 0..1 flight-progress range used by the draw
+ * helpers.
+ *
+ * Motion is now depth-based (see physics.ts): the ball carries a `depth` in
+ * [0, 1] that the renderer feeds straight into depthScale / zoomForProgress.
+ * This helper just guards the range so a depth that momentarily overshoots the
+ * detector plane (or dips below the front) still reads as a valid 0..1
+ * progress. It replaces the old y-between-home-and-detector derivation.
  */
-export function flightProgress(
-  ballY: number,
-  homeY: number,
-  detectorY: number,
-): number {
-  const span = homeY - detectorY;
-  if (span === 0) return 0;
-  return clamp01((homeY - ballY) / span);
+export function flightProgress(depth: number): number {
+  return clamp01(depth);
 }
 
 /**

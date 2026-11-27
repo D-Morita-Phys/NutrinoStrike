@@ -11,8 +11,6 @@
 // (pull strength -> energy -> band -> weighted draw), never by which detector
 // was hit.
 
-import type { Ball } from "./physics.ts";
-
 /** Machine id for a detector. */
 export type DetectorId = "superK" | "kamland";
 
@@ -72,10 +70,12 @@ function detectorRadius(width: number, height: number): number {
 }
 
 /**
- * Build a SINGLE detector target by id, centered horizontally near the top of
- * the play field (y ~= height * 0.22). This is the lone on-field target once a
- * player has chosen a detector on the select screen. The horizontal center
- * keeps it reachable by a straight-up launch (see physics reachability tests).
+ * Build the SINGLE detector target by id. It is the lone on-field target once a
+ * player has chosen a detector on the select screen, and it sits at the BACK of
+ * the depth field: the far vanishing point the ball flies straight into. The
+ * renderer (FEAT-003) places it on screen as that far target; the ball's
+ * arrival is resolved by depth (see hasArrived in physics.ts), not by 2D
+ * overlap. The x/y here are a nominal centered anchor for drawing.
  *
  * The id selects only cosmetic theme/label metadata; the observed species is
  * still always decided by the lottery from launch energy.
@@ -96,40 +96,4 @@ export function createDetector(
     color: meta.color,
     theme: meta.theme,
   };
-}
-
-/**
- * Build the two detector targets for a given play-field size. Both sit in the
- * upper portion of the field so the ball, launched upward, flies into them.
- *
- * Retained for the physics reachability tests and any multi-target view; live
- * gameplay now targets a single chosen detector via createDetector.
- */
-export function createDetectors(width: number, height: number): Detector[] {
-  const radius = detectorRadius(width, height);
-  const y = height * 0.22;
-  return [
-    { id: "kamland", x: width * 0.3, y, radius, ...DETECTOR_META.kamland },
-    { id: "superK", x: width * 0.7, y, radius, ...DETECTOR_META.superK },
-  ];
-}
-
-/** True when the ball overlaps the detector circle. */
-export function hitTest(detector: Detector, ball: Ball): boolean {
-  const dist = Math.hypot(ball.pos.x - detector.x, ball.pos.y - detector.y);
-  return dist <= detector.radius + ball.radius;
-}
-
-/**
- * Return the first detector the ball overlaps, or null if none. Order follows
- * the array, which is fine since detectors do not overlap.
- */
-export function detectorHit(
-  detectors: readonly Detector[],
-  ball: Ball,
-): Detector | null {
-  for (const d of detectors) {
-    if (hitTest(d, ball)) return d;
-  }
-  return null;
 }

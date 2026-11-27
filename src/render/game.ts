@@ -19,15 +19,14 @@ import {
   type Vec2,
   createBall,
   dragDistance,
-  dragToVelocity,
-  isAtRest,
+  hasArrived,
+  launchBall,
   step,
 } from "../game/physics.ts";
 import {
   type Detector,
   type DetectorId,
   createDetector,
-  hitTest,
 } from "../game/detectors.ts";
 import {
   CAMERA_ZOOM_MIN,
@@ -417,8 +416,9 @@ export class Game {
       return;
     }
     // Lock in the energy for this shot from the pull strength, then launch.
+    // Direction is ignored: the ball always flies into depth toward the target.
     launchShot(this.shot, pullToEnergy(dist, MAX_PULL));
-    this.ball.vel = dragToVelocity(drag, MAX_PULL);
+    launchBall(this.ball, drag, MAX_PULL);
 
     // Start the per-shot camera zoom from its base; it advances in update()
     // based on flight progress toward the detector. No full-canvas launch
@@ -478,21 +478,17 @@ export class Game {
     this.trail.unshift({ x: this.ball.pos.x, y: this.ball.pos.y });
     if (this.trail.length > TRAIL_LENGTH) this.trail.length = TRAIL_LENGTH;
 
-    // Advance the detector zoom from flight progress (0 at launch, 1 at the
-    // detector). Drawing-only: hitTest/step below still use raw world coords.
-    const progress = flightProgress(this.ball.pos.y, this.home.y, this.detector.y);
+    // Advance the detector zoom from depth progress (0 at launch, 1 at the
+    // back/detector plane). Drawing-only.
+    const progress = flightProgress(this.ball.depth);
     this.easeCameraToward(zoomForProgress(progress), dt);
 
-    if (!this.shot.resolved) {
-      if (hitTest(this.detector, this.ball)) {
-        this.resolveShot(this.detector);
-        return;
-      }
-    }
-
-    // End a shot that never reached a detector.
-    if (isAtRest(this.ball, this.bounds)) {
-      this.resetBall();
+    // Resolve the shot the instant the ball reaches the detector plane at the
+    // back. In the depth model a launched shot always arrives (no falling
+    // short), so there is no at-rest reset path any more.
+    if (!this.shot.resolved && hasArrived(this.ball)) {
+      this.resolveShot(this.detector);
+      return;
     }
   }
 
@@ -791,7 +787,7 @@ export class Game {
     for (let i = n - 1; i >= 1; i--) {
       const p = this.trail[i];
       const t = i / n; // 0 (newest-ish) -> 1 (oldest)
-      const progress = flightProgress(p.y, this.home.y, this.detector.y);
+      const progress = flightProgress(this.ball.depth);
       const r = this.ball.radius * depthScale(progress) * (1 - t * 0.55);
       const alpha = 0.28 * (1 - t);
       if (r <= 0 || alpha <= 0.01) continue;
@@ -833,7 +829,7 @@ export class Game {
     // Depth render scale while in flight (never while at home/charging, so the
     // resting and charging ball keep their full size). RENDER only.
     const scale = this.shot.launched
-      ? depthScale(flightProgress(ball.pos.y, this.home.y, this.detector.y))
+      ? depthScale(flightProgress(ball.depth))
       : 1;
     const r = ball.radius * scale;
 

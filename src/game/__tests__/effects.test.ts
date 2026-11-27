@@ -79,23 +79,20 @@ describe("depthScale", () => {
 });
 
 describe("flightProgress", () => {
-  // home below (larger y), detector above (smaller y): home y=600, det y=160.
-  it("is 0 at home and 1 at the detector", () => {
-    expect(flightProgress(600, 600, 160)).toBe(0);
-    expect(flightProgress(160, 600, 160)).toBe(1);
+  // Motion is depth-based: flightProgress is the clamped depth (0 front, 1 back).
+  it("is 0 at the front and 1 at the detector plane", () => {
+    expect(flightProgress(0)).toBe(0);
+    expect(flightProgress(1)).toBe(1);
   });
 
-  it("is 0.5 at the midpoint", () => {
-    expect(flightProgress(380, 600, 160)).toBeCloseTo(0.5, 10);
+  it("passes a mid-flight depth straight through", () => {
+    expect(flightProgress(0.5)).toBeCloseTo(0.5, 10);
+    expect(flightProgress(0.25)).toBeCloseTo(0.25, 10);
   });
 
-  it("clamps when the ball overshoots or sits below home", () => {
-    expect(flightProgress(100, 600, 160)).toBe(1);
-    expect(flightProgress(700, 600, 160)).toBe(0);
-  });
-
-  it("returns 0 for a degenerate span", () => {
-    expect(flightProgress(300, 300, 300)).toBe(0);
+  it("clamps depth that overshoots the plane or dips below the front", () => {
+    expect(flightProgress(1.5)).toBe(1);
+    expect(flightProgress(-0.5)).toBe(0);
   });
 });
 

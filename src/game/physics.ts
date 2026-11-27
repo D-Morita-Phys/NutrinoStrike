@@ -1,58 +1,52 @@
 // Lightweight self-written physics for the neutrino ball.
 //
 // Pure of the DOM: this module only knows about numbers, a 2D vector, the Ball
-// state, and the play-field bounds. Rendering and input live elsewhere. The
-// drag -> velocity mapping and the integrator are kept here so the gameplay-feel
-// knobs sit in one place and the pure helpers can be unit tested.
+// state, and the play-field bounds. Rendering and input live elsewhere.
+//
+// Motion model: the ball flies straight from the FRONT (near the player,
+// depth 0) into DEPTH toward the detector shown at the BACK (depth 1). There is
+// NO gravity, NO parabola, NO falling and NO aiming direction: a shot depends
+// only on the pull MAGNITUDE and always travels toward the target. A stronger
+// pull advances depth faster, so it reaches the back sooner. The shot resolves
+// the instant depth reaches the detector plane (1). The drag -> depth-speed
+// mapping and the integrator live here so the gameplay-feel knobs sit in one
+// place and the pure helpers can be unit tested.
 
 // ---------------------------------------------------------------------------
 // TUNABLE CONSTANTS
 //
 // All gameplay-feel numbers live here so balance can be adjusted in one place.
-// Units are canvas pixels and seconds.
+// Depth is a unitless 0..1 progress; time is in seconds.
 // ---------------------------------------------------------------------------
-
-/** Downward acceleration applied every step, in pixels / second^2. */
-export const GRAVITY = 900;
-
-/** Velocity retained after a wall bounce (0 = dead stop, 1 = perfect bounce). */
-export const WALL_DAMPING = 0.7;
-
-/** Per-second velocity retention from air drag / friction (0..1). */
-export const FRICTION = 0.5;
 
 /**
  * Maximum pull distance in pixels. A drag at or beyond this maps to full
- * strength for both the launch speed and the neutrino energy. Shared with the
- * lottery so pull distance -> energy and pull distance -> speed stay in sync.
+ * strength for both the depth-advance speed and the neutrino energy. Shared
+ * with the lottery so pull distance -> energy and pull distance -> speed stay
+ * in sync (both normalize drag magnitude against MAX_PULL and clamp to 0..1).
  */
 export const MAX_PULL = 220;
 
 /**
- * Launch speed in pixels/second at the weakest usable pull.
+ * Depth units per second at the weakest usable pull.
  *
- * A pull-to-speed map that started at zero made the slowest shots fall far
- * short of the detectors: under GRAVITY and FRICTION, a near-zero pull rises
- * only a fraction of the ~363 px needed to reach the targets, so low-energy
- * (reactor / geo) shots could never register an observation. Launch speed is
- * therefore interpolated from this floor (weakest pull) up to
- * MAX_LAUNCH_SPEED (full pull) so EVERY shot carries enough speed to reach the
- * detector band while stronger pulls still fly noticeably faster.
- *
- * This floor is a SPEED knob only. It does not touch pullToEnergy, so the
- * pull-strength -> energy-band mapping (weak = low band, strong = high band) is
- * unchanged; weak shots simply travel fast enough to be observed.
+ * Depth runs 0 (front) -> 1 (back/detector plane), so a speed of 1 crosses the
+ * whole field in one second. This floor keeps even the faintest pull moving
+ * forward at a visible rate so every shot still reaches the detector and runs
+ * the lottery; a zero-length drag launches nothing. This is a SPEED knob only
+ * and does not touch pullToEnergy, so the pull-strength -> energy-band mapping
+ * (weak = low band, strong = high band) is unchanged.
  */
-export const MIN_LAUNCH_SPEED = 1100;
+export const MIN_DEPTH_SPEED = 0.9;
 
-/** Launch speed in pixels/second at full pull strength. */
-export const MAX_LAUNCH_SPEED = 1600;
+/** Depth units per second at full pull strength (reaches the back fastest). */
+export const MAX_DEPTH_SPEED = 2.6;
+
+/** Depth value at which the ball has reached the detector plane (the back). */
+export const DETECTOR_DEPTH = 1;
 
 /** Ball radius in pixels. */
 export const BALL_RADIUS = 16;
-
-/** Below this speed (pixels/second) the ball is considered at rest. */
-export const REST_SPEED = 18;
 
 /** A simple 2D vector. */
 export interface Vec2 {
@@ -60,22 +54,42 @@ export interface Vec2 {
   y: number;
 }
 
-/** Rectangular play-field bounds the ball bounces inside of. */
+/** Rectangular play-field bounds the ball flies inside of. */
 export interface Bounds {
   readonly width: number;
   readonly height: number;
 }
 
-/** Mutable ball state: position and velocity in canvas space. */
+/**
+ * Mutable ball state.
+ *
+ * `depth` is the primary motion axis (0 = front/near, 1 = back/detector plane).
+ * `depthSpeed` is how many depth units the ball advances per second while in
+ * flight; it is 0 at home and set from the pull magnitude at launch.
+ *
+ * `pos`/`vel`/`radius` are retained in canvas space for the renderer and for
+ * any residual 2D geometry (e.g. where to draw the ball). Motion no longer
+ * integrates `vel`; the renderer derives the drawn position from `depth`.
+ */
 export interface Ball {
   pos: Vec2;
   vel: Vec2;
+  /** Flight progress along the depth axis: 0 at the front, 1 at the back. */
+  depth: number;
+  /** Depth units advanced per second while in flight (0 at home). */
+  depthSpeed: number;
   readonly radius: number;
 }
 
-/** Create a ball at rest at the given position. */
+/** Create a ball at rest at the front (depth 0) at the given position. */
 export function createBall(x: number, y: number): Ball {
-  return { pos: { x, y }, vel: { x: 0, y: 0 }, radius: BALL_RADIUS };
+  return {
+    pos: { x, y },
+    vel: { x: 0, y: 0 },
+    depth: 0,
+    depthSpeed: 0,
+    radius: BALL_RADIUS,
+  };
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -90,90 +104,84 @@ export function dragDistance(drag: Vec2): number {
 }
 
 /**
- * Convert a release drag vector into an initial launch velocity.
+ * Normalized pull strength in [0, 1] from a drag distance.
  *
- * Monster Strike-style: the player pulls the ball DOWN and releases, so the
- * ball launches in the OPPOSITE direction of the drag (pull down -> fly up).
- * The launch speed scales with the drag distance, normalized against maxPull
- * and clamped to [0, 1], then interpolated from minSpeed (weakest pull) up to
- * maxSpeed (full pull). The non-zero floor guarantees even the slowest shot
- * carries enough speed to reach the detectors; a zero-length drag still
- * launches nothing.
- *
- * @param drag the vector from the ball to the current pointer (the pull).
- * @param maxPull pull distance mapping to full strength. Defaults to MAX_PULL.
- * @param maxSpeed launch speed at full strength. Defaults to MAX_LAUNCH_SPEED.
- * @param minSpeed launch speed at the weakest usable pull. Defaults to
- *                 MIN_LAUNCH_SPEED.
+ * This is the SAME clamped `distance / maxPull` normalization the lottery uses
+ * in pullToEnergy, exposed so the pull gauge, energy and depth-speed all agree
+ * on how far "full pull" is. Strength depends only on the drag MAGNITUDE, never
+ * its direction.
  */
-export function dragToVelocity(
-  drag: Vec2,
+export function pullStrength(
+  pullDistance: number,
   maxPull: number = MAX_PULL,
-  maxSpeed: number = MAX_LAUNCH_SPEED,
-  minSpeed: number = MIN_LAUNCH_SPEED,
-): Vec2 {
-  const dist = dragDistance(drag);
-  if (dist === 0 || !(maxPull > 0)) {
-    return { x: 0, y: 0 };
-  }
-  const strength = clamp(dist / maxPull, 0, 1);
-  const speed = minSpeed + strength * (maxSpeed - minSpeed);
-  // Opposite direction of the drag, unit vector scaled by speed.
-  return { x: (-drag.x / dist) * speed, y: (-drag.y / dist) * speed };
+): number {
+  if (!(maxPull > 0)) return 0;
+  return clamp(pullDistance / maxPull, 0, 1);
 }
 
 /**
- * Advance the ball by dt seconds under gravity, friction and wall bounce.
+ * Map a pull distance to the ball's depth-advance speed (depth units/second).
  *
- * Mutates and returns the ball. Walls are the play-field bounds; hitting one
- * reflects the velocity and scales it by WALL_DAMPING so motion decays.
+ * Magnitude only: there is no direction. The speed is interpolated from
+ * MIN_DEPTH_SPEED (weakest usable pull) up to MAX_DEPTH_SPEED (full pull) using
+ * the clamped pull strength, so a stronger pull strictly advances faster and
+ * reaches the back sooner. A zero-length drag yields 0 (nothing launches).
+ *
+ * @param pullDistance how far the ball was pulled (drag magnitude, pixels).
+ * @param maxPull pull distance mapping to full strength. Defaults to MAX_PULL.
+ * @param maxSpeed depth speed at full strength. Defaults to MAX_DEPTH_SPEED.
+ * @param minSpeed depth speed at the weakest usable pull. Defaults to
+ *                 MIN_DEPTH_SPEED.
  */
-export function step(ball: Ball, bounds: Bounds, dt: number): Ball {
-  // Gravity.
-  ball.vel.y += GRAVITY * dt;
+export function pullToDepthSpeed(
+  pullDistance: number,
+  maxPull: number = MAX_PULL,
+  maxSpeed: number = MAX_DEPTH_SPEED,
+  minSpeed: number = MIN_DEPTH_SPEED,
+): number {
+  if (pullDistance <= 0 || !(maxPull > 0)) return 0;
+  const strength = pullStrength(pullDistance, maxPull);
+  return minSpeed + strength * (maxSpeed - minSpeed);
+}
 
-  // Air drag / friction: exponential decay independent of frame rate.
-  const retain = Math.pow(FRICTION, dt);
-  ball.vel.x *= retain;
-  ball.vel.y *= retain;
-
-  // Integrate position.
-  ball.pos.x += ball.vel.x * dt;
-  ball.pos.y += ball.vel.y * dt;
-
-  const r = ball.radius;
-
-  // Left / right walls.
-  if (ball.pos.x - r < 0) {
-    ball.pos.x = r;
-    ball.vel.x = -ball.vel.x * WALL_DAMPING;
-  } else if (ball.pos.x + r > bounds.width) {
-    ball.pos.x = bounds.width - r;
-    ball.vel.x = -ball.vel.x * WALL_DAMPING;
-  }
-
-  // Top / bottom walls.
-  if (ball.pos.y - r < 0) {
-    ball.pos.y = r;
-    ball.vel.y = -ball.vel.y * WALL_DAMPING;
-  } else if (ball.pos.y + r > bounds.height) {
-    ball.pos.y = bounds.height - r;
-    ball.vel.y = -ball.vel.y * WALL_DAMPING;
-  }
-
+/**
+ * Launch the ball from a release drag: lock in its depth-advance speed from the
+ * pull MAGNITUDE and reset it to the front. Mutates and returns the ball. The
+ * drag direction is ignored by design; the ball always flies toward the back.
+ */
+export function launchBall(
+  ball: Ball,
+  drag: Vec2,
+  maxPull: number = MAX_PULL,
+): Ball {
+  ball.depth = 0;
+  ball.depthSpeed = pullToDepthSpeed(dragDistance(drag), maxPull);
   return ball;
 }
 
-/** Current speed (velocity magnitude) of the ball in pixels/second. */
-export function speed(ball: Ball): number {
-  return Math.hypot(ball.vel.x, ball.vel.y);
+/**
+ * Advance the ball by dt seconds along the depth axis.
+ *
+ * Mutates and returns the ball. No gravity, no friction, no wall bounce: depth
+ * increases by depthSpeed * dt and is clamped so it never runs past the
+ * detector plane. A ball with depthSpeed 0 (no launch) does not move at all,
+ * no matter how many times step() is called. `bounds` is accepted for API
+ * stability with the renderer but is not needed for depth motion.
+ */
+export function step(ball: Ball, _bounds: Bounds, dt: number): Ball {
+  if (ball.depthSpeed <= 0) return ball;
+  ball.depth = clamp(ball.depth + ball.depthSpeed * dt, 0, DETECTOR_DEPTH);
+  return ball;
 }
 
 /**
- * Whether the ball has effectively come to rest: slow and sitting on the floor.
- * Used to end a shot that never reached a detector.
+ * Whether the ball has reached the detector plane at the back (depth >= 1).
+ *
+ * This is the arrival/hit predicate for the depth model: a shot resolves the
+ * instant it arrives. A launched shot always arrives (there is no falling
+ * short), so this becomes true after enough step() calls. A fresh ball at
+ * depth 0 is NOT arrived.
  */
-export function isAtRest(ball: Ball, bounds: Bounds): boolean {
-  const onFloor = ball.pos.y + ball.radius >= bounds.height - 1;
-  return onFloor && speed(ball) < REST_SPEED;
+export function hasArrived(ball: Ball): boolean {
+  return ball.depth >= DETECTOR_DEPTH;
 }
