@@ -39,6 +39,7 @@ import {
   flightProgress,
   isPhotonDead,
   photonAlpha,
+  photonBurstRevealMs,
   spawnPhotonBurst,
   updatePhoton,
   zoomForProgress,
@@ -164,8 +165,15 @@ export class Game {
   private readonly history: Observation[] = [];
   private lastTime = 0;
   private rafId = 0;
-  /** Pending reset timeout after a resolved shot, so stop() can clear it. */
-  private resetTimeoutId = 0;
+  /**
+   * Pending "reveal then resolve" timeout after a hit. On a hit the renderer
+   * fires the FX and spawns the photon burst, but defers the ui.onResolve
+   * hand-off (which navigates to the result scene and hides/stops this canvas)
+   * by this timeout so the burst actually animates on-screen first. stop(),
+   * reset() and destroy() clear it so a shot resolved just before the player
+   * leaves the play scene can never navigate late (stale-state guard).
+   */
+  private revealTimeoutId = 0;
   /**
    * Whether the render/update loop is live. Checked inside the loop before
    * scheduling the next frame so that a stop() triggered from within a frame
@@ -217,16 +225,16 @@ export class Game {
   /**
    * Re-home the ball and clear the shot lifecycle so the next run starts
    * clean. Called on every entry into the play scene (see app.ts). Without
-   * this, a shot resolved in the previous run (its pending reset timeout was
+   * this, a shot resolved in the previous run (its pending reveal timeout was
    * cancelled by stop()) would leak into the next run: the leftover ball would
    * resume falling and block input until it came to rest. Cancelling any
-   * pending reset timeout here makes reset idempotent and safe to call while
+   * pending reveal timeout here makes reset idempotent and safe to call while
    * the loop is stopped.
    */
   reset(): void {
-    if (this.resetTimeoutId !== 0) {
-      window.clearTimeout(this.resetTimeoutId);
-      this.resetTimeoutId = 0;
+    if (this.revealTimeoutId !== 0) {
+      window.clearTimeout(this.revealTimeoutId);
+      this.revealTimeoutId = 0;
     }
     this.dragging = false;
     this.shake = 0;
@@ -293,9 +301,9 @@ export class Game {
     this.running = false;
     cancelAnimationFrame(this.rafId);
     this.rafId = 0;
-    if (this.resetTimeoutId !== 0) {
-      window.clearTimeout(this.resetTimeoutId);
-      this.resetTimeoutId = 0;
+    if (this.revealTimeoutId !== 0) {
+      window.clearTimeout(this.revealTimeoutId);
+      this.revealTimeoutId = 0;
     }
   }
 
@@ -486,8 +494,9 @@ export class Game {
     }
 
     // Advance and cull the hit-time photon burst EVERY frame, independent of
-    // shot state, so it keeps animating during the ~450ms reset delay after a
-    // hit resolves. Independent of the shake/flash decay above.
+    // shot state, so it keeps animating during the reveal delay between a hit
+    // resolving and the deferred hand-off to the result scene. Independent of
+    // the shake/flash decay above.
     if (this.photons.length > 0) {
       for (const p of this.photons) updatePhoton(p, dt);
       this.photons = this.photons.filter((p) => !isPhotonDead(p));
@@ -561,15 +570,22 @@ export class Game {
     if (this.history.length > MAX_HISTORY) this.history.pop();
     this.renderHistory();
 
-    // Notify the app so it can switch to the result scene and record the
-    // discovery in the collection.
-    this.ui.onResolve?.(observation);
-
-    // Give the ball a brief visible bounce, then reset for the next shot.
-    this.resetTimeoutId = window.setTimeout(() => {
-      this.resetTimeoutId = 0;
-      this.resetBall();
-    }, 450);
+    // Defer the hand-off to the result scene. onResolve navigates away, which
+    // hides this canvas and stops the loop; calling it now (as the previous
+    // version did, synchronously) would freeze the burst at its spawn point and
+    // the player would never see it. Instead keep the play loop running so the
+    // photon burst (and the shake/flash impact) animate on-screen, then notify
+    // the app once the burst has had time to play out.
+    //
+    // The timeout handle is cleared by stop()/reset()/destroy(), so if the
+    // player leaves the play scene before it fires (e.g. やり直し), the deferred
+    // onResolve never runs and cannot navigate late. shot.resolved is already
+    // set above and update() guards on it, so a single shot schedules exactly
+    // one reveal (no double onResolve).
+    this.revealTimeoutId = window.setTimeout(() => {
+      this.revealTimeoutId = 0;
+      this.ui.onResolve?.(observation);
+    }, photonBurstRevealMs());
   }
 
   // --- Result UI -----------------------------------------------------------

@@ -18,6 +18,7 @@ import {
   PHOTON_MIN_LIFE,
   PHOTON_MIN_SIZE,
   PHOTON_MIN_SPEED,
+  PHOTON_REVEAL_TAIL,
   type Photon,
   arrowGaugeDims,
   chargeIntensity,
@@ -27,6 +28,7 @@ import {
   flightProgress,
   isPhotonDead,
   photonAlpha,
+  photonBurstRevealMs,
   spawnPhotonBurst,
   updatePhoton,
   zoomForProgress,
@@ -331,5 +333,31 @@ describe("isPhotonDead", () => {
     expect(isPhotonDead(photon(0.01))).toBe(false);
     expect(isPhotonDead(photon(0))).toBe(true);
     expect(isPhotonDead(photon(-0.5))).toBe(true);
+  });
+});
+
+describe("photonBurstRevealMs", () => {
+  it("covers the full longest photon life plus the reveal tail", () => {
+    // The reveal delay must be at least as long as the slowest photon's life so
+    // the whole burst has animated before the result scene takes over.
+    const expected = Math.round((PHOTON_MAX_LIFE + PHOTON_REVEAL_TAIL) * 1000);
+    expect(photonBurstRevealMs()).toBe(expected);
+    expect(photonBurstRevealMs()).toBeGreaterThanOrEqual(
+      Math.round(PHOTON_MAX_LIFE * 1000),
+    );
+  });
+
+  it("is a positive whole number of milliseconds", () => {
+    const ms = photonBurstRevealMs();
+    expect(ms).toBeGreaterThan(0);
+    expect(Number.isInteger(ms)).toBe(true);
+  });
+
+  it("scales with the supplied life and tail and clamps negatives to 0", () => {
+    expect(photonBurstRevealMs(0.5, 0.1)).toBe(600);
+    expect(photonBurstRevealMs(1, 0)).toBe(1000);
+    // Negative inputs are floored so the delay never goes below the other term.
+    expect(photonBurstRevealMs(-1, 0.2)).toBe(200);
+    expect(photonBurstRevealMs(0.3, -1)).toBe(300);
   });
 });

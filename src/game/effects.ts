@@ -317,3 +317,32 @@ export function photonAlpha(p: Photon): number {
 export function isPhotonDead(p: Photon): boolean {
   return p.life <= 0;
 }
+
+/**
+ * Extra time (seconds) the play screen lingers after the longest-lived photon
+ * has faded, so the burst reads as a complete flash before the renderer hands
+ * off to the result scene. Small and purely cosmetic.
+ */
+export const PHOTON_REVEAL_TAIL = 0.12;
+
+/**
+ * How long (in milliseconds) the play screen should keep animating a hit burst
+ * before navigating to the result scene.
+ *
+ * The bug this guards against: resolving a shot used to navigate to the result
+ * scene synchronously, which hid the play canvas and stopped the loop in the
+ * same frame the photons spawned, so the burst never animated and was never
+ * seen. Delaying the hand-off by at least the longest photon lifetime (plus a
+ * short tail) lets the whole burst play out on the still-live play canvas.
+ *
+ * Derived from the photon life ceiling so it always covers the full burst even
+ * if the life constants are retuned. Returned in milliseconds to match the
+ * window.setTimeout the renderer schedules it with.
+ */
+export function photonBurstRevealMs(
+  maxLifeSec: number = PHOTON_MAX_LIFE,
+  tailSec: number = PHOTON_REVEAL_TAIL,
+): number {
+  const total = Math.max(0, maxLifeSec) + Math.max(0, tailSec);
+  return Math.round(total * 1000);
+}
