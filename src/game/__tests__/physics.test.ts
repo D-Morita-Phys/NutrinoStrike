@@ -1,178 +1,197 @@
 import { describe, expect, it } from "vitest";
 import {
-  GRAVITY,
-  FRICTION,
-  MAX_LAUNCH_SPEED,
-  MIN_LAUNCH_SPEED,
+  DETECTOR_DEPTH,
+  MAX_DEPTH_SPEED,
   MAX_PULL,
+  MIN_DEPTH_SPEED,
   createBall,
   dragDistance,
-  dragToVelocity,
-  isAtRest,
-  speed,
+  hasArrived,
+  launchBall,
+  pullStrength,
+  pullToDepthSpeed,
   step,
 } from "../physics.ts";
-import { createDetectors, hitTest } from "../detectors.ts";
+
+const bounds = { width: 480, height: 720 };
 
 describe("dragDistance", () => {
-  it("is the Euclidean length of the drag vector", () => {
+  it("is the Euclidean length of the drag vector (magnitude only)", () => {
     expect(dragDistance({ x: 3, y: 4 })).toBe(5);
     expect(dragDistance({ x: 0, y: 0 })).toBe(0);
+    // Direction does not matter: same magnitude, any direction -> same value.
+    expect(dragDistance({ x: 0, y: 5 })).toBe(5);
+    expect(dragDistance({ x: -4, y: -3 })).toBe(5);
   });
 });
 
-describe("dragToVelocity", () => {
-  it("launches opposite the drag direction (pull down -> fly up)", () => {
-    // Drag straight down by the full pull distance.
-    const v = dragToVelocity({ x: 0, y: MAX_PULL });
-    expect(v.x).toBeCloseTo(0, 10);
-    // Velocity points up (negative y) at full launch speed.
-    expect(v.y).toBeCloseTo(-MAX_LAUNCH_SPEED, 6);
+describe("pullStrength", () => {
+  it("normalizes drag distance against MAX_PULL into 0..1", () => {
+    expect(pullStrength(0, MAX_PULL)).toBe(0);
+    expect(pullStrength(MAX_PULL / 2, MAX_PULL)).toBeCloseTo(0.5, 10);
+    expect(pullStrength(MAX_PULL, MAX_PULL)).toBe(1);
   });
 
-  it("interpolates launch speed from the floor up to max with drag distance", () => {
-    // A tiny-but-nonzero pull launches at the MIN_LAUNCH_SPEED floor so even
-    // the weakest shot can reach the detectors.
-    const faint = dragToVelocity({ x: 0, y: 0.0001 });
-    expect(Math.hypot(faint.x, faint.y)).toBeCloseTo(MIN_LAUNCH_SPEED, 3);
+  it("clamps at MAX_PULL so an overdrawn pull is still full strength", () => {
+    expect(pullStrength(MAX_PULL * 3, MAX_PULL)).toBe(1);
+    expect(pullStrength(1e9, MAX_PULL)).toBe(1);
+  });
 
-    // A half pull sits halfway between the floor and the max.
-    const half = dragToVelocity({ x: 0, y: MAX_PULL / 2 });
-    expect(Math.hypot(half.x, half.y)).toBeCloseTo(
-      MIN_LAUNCH_SPEED + (MAX_LAUNCH_SPEED - MIN_LAUNCH_SPEED) / 2,
-      6,
+  it("guards a non-positive maxPull", () => {
+    expect(pullStrength(100, 0)).toBe(0);
+  });
+});
+
+describe("pullToDepthSpeed", () => {
+  it("is zero for a zero-length pull (nothing launches)", () => {
+    expect(pullToDepthSpeed(0, MAX_PULL)).toBe(0);
+  });
+
+  it("launches the weakest usable pull at the MIN_DEPTH_SPEED floor", () => {
+    // A barely-there pull still advances so even weak shots reach the back.
+    expect(pullToDepthSpeed(0.0001, MAX_PULL)).toBeCloseTo(MIN_DEPTH_SPEED, 3);
+  });
+
+  it("reaches MAX_DEPTH_SPEED at full pull and caps beyond it", () => {
+    expect(pullToDepthSpeed(MAX_PULL, MAX_PULL)).toBeCloseTo(MAX_DEPTH_SPEED, 10);
+    expect(pullToDepthSpeed(MAX_PULL * 3, MAX_PULL)).toBeCloseTo(
+      MAX_DEPTH_SPEED,
+      10,
     );
   });
 
-  it("caps launch speed at full strength for overdrawn pulls", () => {
-    const over = dragToVelocity({ x: 0, y: MAX_PULL * 3 });
-    expect(Math.hypot(over.x, over.y)).toBeCloseTo(MAX_LAUNCH_SPEED, 6);
+  it("interpolates the floor->max halfway for a half pull", () => {
+    expect(pullToDepthSpeed(MAX_PULL / 2, MAX_PULL)).toBeCloseTo(
+      MIN_DEPTH_SPEED + (MAX_DEPTH_SPEED - MIN_DEPTH_SPEED) / 2,
+      10,
+    );
   });
 
-  it("returns a zero velocity for a zero-length drag", () => {
-    const v = dragToVelocity({ x: 0, y: 0 });
-    expect(v).toEqual({ x: 0, y: 0 });
-  });
-
-  it("preserves the launch direction for a diagonal drag", () => {
-    // Drag down-right -> launch up-left.
-    const v = dragToVelocity({ x: MAX_PULL, y: MAX_PULL });
-    expect(v.x).toBeLessThan(0);
-    expect(v.y).toBeLessThan(0);
-    expect(Math.hypot(v.x, v.y)).toBeCloseTo(MAX_LAUNCH_SPEED, 6);
+  it("is strictly monotonic in pull strength (stronger pull => faster)", () => {
+    let prev = pullToDepthSpeed(1, MAX_PULL);
+    for (let i = 1; i <= 10; i++) {
+      const cur = pullToDepthSpeed((MAX_PULL * i) / 10, MAX_PULL);
+      expect(cur).toBeGreaterThan(prev);
+      prev = cur;
+    }
   });
 });
 
-describe("step", () => {
-  const bounds = { width: 400, height: 600 };
+describe("step (depth advance, no gravity)", () => {
+  it("does not move a ball that was never launched (no gravity, no fall)", () => {
+    const ball = createBall(240, 600);
+    const startDepth = ball.depth;
+    const startPos = { ...ball.pos };
+    for (let i = 0; i < 500; i++) {
+      step(ball, bounds, 1 / 60);
+    }
+    // A ball with no launch input stays put across repeated step() calls.
+    expect(ball.depth).toBe(startDepth);
+    expect(ball.depth).toBe(0);
+    expect(ball.pos).toEqual(startPos);
+  });
 
-  it("moves the ball and applies gravity over time", () => {
-    const ball = createBall(200, 300);
-    ball.vel = { x: 0, y: 0 };
+  it("advances depth from the front toward the back over time once launched", () => {
+    const ball = createBall(240, 600);
+    launchBall(ball, { x: 0, y: MAX_PULL }, MAX_PULL);
+    expect(ball.depth).toBe(0);
+
     step(ball, bounds, 0.1);
-    // Gravity pulls downward: y increases, downward velocity gained.
-    expect(ball.pos.y).toBeGreaterThan(300);
-    expect(ball.vel.y).toBeGreaterThan(0);
+    const afterOne = ball.depth;
+    expect(afterOne).toBeGreaterThan(0);
+
+    step(ball, bounds, 0.1);
+    // Depth keeps increasing toward the back.
+    expect(ball.depth).toBeGreaterThan(afterOne);
+    expect(ball.depth).toBeLessThanOrEqual(DETECTOR_DEPTH);
   });
 
-  it("bounces off the floor and loses energy", () => {
-    const ball = createBall(200, bounds.height - 1);
-    ball.vel = { x: 0, y: 500 };
-    step(ball, bounds, 0.05);
-    // After clamping at the floor the velocity reverses (now upward).
-    expect(ball.vel.y).toBeLessThan(0);
-    expect(ball.pos.y).toBeLessThanOrEqual(bounds.height - ball.radius);
+  it("ignores drag DIRECTION: only magnitude sets the advance", () => {
+    const down = createBall(240, 600);
+    const up = createBall(240, 600);
+    const diag = createBall(240, 600);
+    // Same magnitude (MAX_PULL), three different directions.
+    launchBall(down, { x: 0, y: MAX_PULL }, MAX_PULL);
+    launchBall(up, { x: 0, y: -MAX_PULL }, MAX_PULL);
+    launchBall(diag, { x: MAX_PULL / Math.SQRT2, y: MAX_PULL / Math.SQRT2 }, MAX_PULL);
+    expect(up.depthSpeed).toBeCloseTo(down.depthSpeed, 10);
+    expect(diag.depthSpeed).toBeCloseTo(down.depthSpeed, 10);
+
+    step(down, bounds, 0.1);
+    step(up, bounds, 0.1);
+    step(diag, bounds, 0.1);
+    expect(up.depth).toBeCloseTo(down.depth, 10);
+    expect(diag.depth).toBeCloseTo(down.depth, 10);
   });
 
-  it("keeps the ball within the horizontal bounds", () => {
-    const ball = createBall(5, 300);
-    ball.vel = { x: -800, y: 0 };
-    step(ball, bounds, 0.05);
-    expect(ball.pos.x).toBeGreaterThanOrEqual(ball.radius);
-  });
-});
+  it("reaches the back strictly sooner for a stronger pull than a weaker one", () => {
+    const strong = createBall(240, 600);
+    const weak = createBall(240, 600);
+    launchBall(strong, { x: 0, y: MAX_PULL }, MAX_PULL);
+    launchBall(weak, { x: 0, y: MAX_PULL * 0.2 }, MAX_PULL);
 
-describe("isAtRest", () => {
-  const bounds = { width: 400, height: 600 };
-
-  /** Y coordinate that places the ball's bottom edge on the floor. */
-  function floorY(): number {
-    return bounds.height - createBall(0, 0).radius;
-  }
-
-  it("is true when the ball is slow and on the floor", () => {
-    const ball = createBall(200, floorY());
-    ball.vel = { x: 1, y: 1 };
-    expect(isAtRest(ball, bounds)).toBe(true);
-  });
-
-  it("is false while the ball is moving fast", () => {
-    const ball = createBall(200, floorY());
-    ball.vel = { x: 0, y: 400 };
-    expect(isAtRest(ball, bounds)).toBe(false);
-  });
-
-  it("is false while the ball is airborne", () => {
-    const ball = createBall(200, 100);
-    ball.vel = { x: 0, y: 0 };
-    expect(isAtRest(ball, bounds)).toBe(false);
-  });
-});
-
-describe("detector reachability", () => {
-  // Mirror the live game layout (see render/game.ts): a 480x720 field with the
-  // ball resting at 82% height, launched straight up at the detector column.
-  const WIDTH = 480;
-  const HEIGHT = 720;
-  const HOME_Y = HEIGHT * 0.82;
-  const bounds = { width: WIDTH, height: HEIGHT };
-  const detectors = createDetectors(WIDTH, HEIGHT);
-
-  /**
-   * Launch the ball straight up at the given speed from the detector's x and
-   * step the physics until it either overlaps the detector or falls back to
-   * its start height. Returns true if it registered a hit.
-   */
-  function verticalShotHits(launchSpeed: number): boolean {
-    const target = detectors[0];
-    const ball = createBall(target.x, HOME_Y);
-    ball.vel = { x: 0, y: -launchSpeed };
     const dt = 1 / 120;
-    for (let i = 0; i < 2000; i++) {
-      step(ball, bounds, dt);
-      if (hitTest(target, ball)) return true;
-      // Give up once the ball has peaked and returned below its start.
-      if (ball.vel.y > 0 && ball.pos.y >= HOME_Y) break;
+    function stepsToArrive(ball: ReturnType<typeof createBall>): number {
+      for (let i = 1; i <= 10000; i++) {
+        step(ball, bounds, dt);
+        if (hasArrived(ball)) return i;
+      }
+      return Number.POSITIVE_INFINITY;
     }
-    return false;
-  }
-
-  it("has gravity and friction that would otherwise starve weak shots", () => {
-    // Sanity anchor for the balance: the layout demands a fast launch.
-    expect(GRAVITY).toBeGreaterThan(0);
-    expect(FRICTION).toBeGreaterThan(0);
-    expect(FRICTION).toBeLessThan(1);
+    const strongSteps = stepsToArrive(strong);
+    const weakSteps = stepsToArrive(weak);
+    expect(Number.isFinite(strongSteps)).toBe(true);
+    expect(Number.isFinite(weakSteps)).toBe(true);
+    // Stronger pull arrives in strictly fewer steps.
+    expect(strongSteps).toBeLessThan(weakSteps);
   });
 
-  it("reaches a detector at the weakest usable pull (low band)", () => {
-    // A barely-there drag launches at the floor speed.
-    const faint = dragToVelocity({ x: 0, y: 0.0001 });
-    expect(verticalShotHits(Math.hypot(faint.x, faint.y))).toBe(true);
-  });
-
-  it("reaches a detector across low, mid and high band pulls", () => {
-    // Representative pulls inside each logarithmic energy band third.
-    for (const frac of [1 / 6, 1 / 2, 5 / 6, 1]) {
-      const v = dragToVelocity({ x: 0, y: MAX_PULL * frac });
-      expect(verticalShotHits(Math.hypot(v.x, v.y))).toBe(true);
+  it("clamps depth at the detector plane and never overshoots", () => {
+    const ball = createBall(240, 600);
+    launchBall(ball, { x: 0, y: MAX_PULL }, MAX_PULL);
+    for (let i = 0; i < 1000; i++) {
+      step(ball, bounds, 0.1);
+      expect(ball.depth).toBeLessThanOrEqual(DETECTOR_DEPTH);
     }
+    expect(ball.depth).toBe(DETECTOR_DEPTH);
   });
 });
 
-describe("speed", () => {
-  it("is the velocity magnitude", () => {
-    const ball = createBall(0, 0);
-    ball.vel = { x: 3, y: 4 };
-    expect(speed(ball)).toBe(5);
+describe("hasArrived (depth arrival predicate)", () => {
+  it("is false for a fresh ball at the front", () => {
+    const ball = createBall(240, 600);
+    expect(hasArrived(ball)).toBe(false);
+  });
+
+  it("is false mid-flight and true exactly when depth reaches the plane", () => {
+    const ball = createBall(240, 600);
+    // Launch at a known speed: MIN..MAX; pick a mid pull for a few frames.
+    launchBall(ball, { x: 0, y: MAX_PULL / 2 }, MAX_PULL);
+    const dt = 1 / 60;
+    let arrivedOnce = false;
+    let depthWhenArrived = 0;
+    for (let i = 0; i < 10000; i++) {
+      const wasArrived = hasArrived(ball);
+      step(ball, bounds, dt);
+      if (!wasArrived && hasArrived(ball)) {
+        arrivedOnce = true;
+        depthWhenArrived = ball.depth;
+        break;
+      }
+      // Before arrival the predicate must stay false.
+      if (!hasArrived(ball)) {
+        expect(ball.depth).toBeLessThan(DETECTOR_DEPTH);
+      }
+    }
+    expect(arrivedOnce).toBe(true);
+    expect(depthWhenArrived).toBeGreaterThanOrEqual(DETECTOR_DEPTH);
+  });
+
+  it("fires only once the ball has actually advanced to the back", () => {
+    const ball = createBall(240, 600);
+    launchBall(ball, { x: 0, y: MAX_PULL }, MAX_PULL);
+    // One tiny step is not enough to arrive from the front.
+    step(ball, bounds, 1 / 1000);
+    expect(hasArrived(ball)).toBe(false);
   });
 });

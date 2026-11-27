@@ -18,21 +18,20 @@ import {
   type Bounds,
   type Vec2,
   createBall,
-  dragDistance,
-  dragToVelocity,
-  isAtRest,
+  hasArrived,
+  launchBall,
   step,
 } from "../game/physics.ts";
 import {
   type Detector,
   type DetectorId,
   createDetector,
-  hitTest,
 } from "../game/detectors.ts";
 import {
   CAMERA_ZOOM_MIN,
   MAX_CHARGE_JITTER_PX,
   chargeIntensity,
+  convergeToTarget,
   depthScale,
   flightProgress,
   zoomForProgress,
@@ -116,7 +115,13 @@ export class Game {
   // Drag state.
   private dragging = false;
   private pointer: Vec2 = { x: 0, y: 0 };
-  /** Fixed home position the drag vector is always measured from. */
+  /**
+   * Where the current drag began (pointer-down). The pull is measured as the
+   * distance from here to the live pointer, i.e. how far you dragged WITHIN the
+   * shot window. There is no aim direction.
+   */
+  private pointerDown: Vec2 = { x: 0, y: 0 };
+  /** Fixed home position where the resting ball sits (front/near the player). */
   private readonly home: Vec2;
 
   // Per-shot lifecycle (launched / resolved / locked-in energy). Kept as a
@@ -381,13 +386,16 @@ export class Game {
   };
 
   /**
-   * The drag vector points from the ball's HOME position toward the current
-   * pointer. Measuring from home (not the pointer-down spot) keeps the
-   * pullToEnergy / dragToVelocity semantics unchanged even though a drag can
-   * now start anywhere on the field.
+   * How far the pointer has been dragged WITHIN the shot window, measured from
+   * the pointer-down spot to the live pointer. MAGNITUDE ONLY: there is no aim
+   * direction, so only the distance matters. This drives both the energy
+   * readout (pullToEnergy) and the launch depth-speed.
    */
-  private currentDrag(): Vec2 {
-    return { x: this.pointer.x - this.home.x, y: this.pointer.y - this.home.y };
+  private pullDistance(): number {
+    return Math.hypot(
+      this.pointer.x - this.pointerDown.x,
+      this.pointer.y - this.pointerDown.y,
+    );
   }
 
   private beginDrag(p: Vec2): void {
@@ -395,8 +403,10 @@ export class Game {
     // launched and none still resolving).
     if (!isFreshShot(this.shot)) return;
     // Drag from ANYWHERE on the field: a pointer-down anywhere starts charging.
-    // The pull is always measured from the ball's home position.
+    // The pull is measured as the distance dragged from this pointer-down spot,
+    // not from the ball's home position.
     this.dragging = true;
+    this.pointerDown = p;
     this.pointer = p;
     this.updateEnergyFromDrag();
   }
@@ -409,16 +419,17 @@ export class Game {
   private endDrag(): void {
     if (!this.dragging) return;
     this.dragging = false;
-    const drag = this.currentDrag();
-    const dist = dragDistance(drag);
+    const dist = this.pullDistance();
     if (dist < 4) {
       // A tap, not a pull: do not launch.
       this.updateEnergyReadout(0);
       return;
     }
     // Lock in the energy for this shot from the pull strength, then launch.
+    // Only the pull MAGNITUDE matters; the ball always flies into depth toward
+    // the detector. We feed the magnitude through a direction-free drag vector.
     launchShot(this.shot, pullToEnergy(dist, MAX_PULL));
-    this.ball.vel = dragToVelocity(drag, MAX_PULL);
+    launchBall(this.ball, { x: dist, y: 0 }, MAX_PULL);
 
     // Start the per-shot camera zoom from its base; it advances in update()
     // based on flight progress toward the detector. No full-canvas launch
@@ -435,8 +446,7 @@ export class Game {
   }
 
   private updateEnergyFromDrag(): void {
-    const dist = dragDistance(this.currentDrag());
-    this.updateEnergyReadout(pullToEnergy(dist, MAX_PULL));
+    this.updateEnergyReadout(pullToEnergy(this.pullDistance(), MAX_PULL));
   }
 
   private updateEnergyReadout(energyMeV: number): void {
@@ -444,7 +454,7 @@ export class Game {
     this.ui.energyReadout.textContent =
       energyMeV > 0
         ? `Pull energy: ${formatEnergy(energyMeV)} (${band.label})`
-        : "Pull the ball DOWN and release to launch it UP.";
+        : "Drag anywhere to charge, then release to fire toward the detector.";
   }
 
   // --- Update --------------------------------------------------------------
@@ -474,25 +484,22 @@ export class Game {
 
     step(this.ball, this.bounds, dt);
 
-    // Record the ball's WORLD position for the motion trail (newest first).
-    this.trail.unshift({ x: this.ball.pos.x, y: this.ball.pos.y });
+    // Record the ball's DRAWN (converging) position for the motion trail so the
+    // afterimage recedes toward the detector with the ball (newest first).
+    this.trail.unshift(this.drawnBallPos());
     if (this.trail.length > TRAIL_LENGTH) this.trail.length = TRAIL_LENGTH;
 
-    // Advance the detector zoom from flight progress (0 at launch, 1 at the
-    // detector). Drawing-only: hitTest/step below still use raw world coords.
-    const progress = flightProgress(this.ball.pos.y, this.home.y, this.detector.y);
+    // Advance the detector zoom from depth progress (0 at launch, 1 at the
+    // back/detector plane). Drawing-only.
+    const progress = flightProgress(this.ball.depth);
     this.easeCameraToward(zoomForProgress(progress), dt);
 
-    if (!this.shot.resolved) {
-      if (hitTest(this.detector, this.ball)) {
-        this.resolveShot(this.detector);
-        return;
-      }
-    }
-
-    // End a shot that never reached a detector.
-    if (isAtRest(this.ball, this.bounds)) {
-      this.resetBall();
+    // Resolve the shot the instant the ball reaches the detector plane at the
+    // back. In the depth model a launched shot always arrives (no falling
+    // short), so there is no at-rest reset path any more.
+    if (!this.shot.resolved && hasArrived(this.ball)) {
+      this.resolveShot(this.detector);
+      return;
     }
   }
 
@@ -672,80 +679,95 @@ export class Game {
     ctx.fillText(d.labelJa, d.x, d.y + 14);
   }
 
+  /**
+   * Magnitude-only charge gauge shown while dragging. There is NO aim
+   * direction: the ball always fires toward the detector, so instead of a
+   * launch arrow we draw a charge meter that reads pull STRENGTH only.
+   *
+   * It has two parts, both coloured by the current energy band:
+   *  - a growing ring around the resting ball whose radius tracks strength;
+   *  - a horizontal energy bar + readout under the ball.
+   * Styling stays translucent to match the previous aim guide.
+   */
   private renderAimGuide(): void {
     if (!this.dragging) return;
     const { ctx, home } = this;
-    const drag = this.currentDrag();
-    const rawDist = dragDistance(drag);
+    const rawDist = this.pullDistance();
     if (rawDist <= 0) return;
     const energyMeV = pullToEnergy(rawDist, MAX_PULL);
     const band = energyToBand(energyMeV);
 
-    // True normalized pull strength (0..1): the arrow reads launch energy, so
-    // a full pull is visibly bigger than a half pull (no early saturation).
+    // Normalized pull strength (0..1): full pull reads visibly stronger.
     const strength = Math.min(rawDist, MAX_PULL) / MAX_PULL;
     const color = this.bandColor(band.id);
 
-    // Pull-back line from the home position to the pointer.
+    // Growing charge ring around the resting ball. Its radius and thickness
+    // both scale with strength, so size encodes energy with no direction.
+    const minR = this.ball.radius + 10;
+    const maxR = this.ball.radius + 96;
+    const ringR = minR + strength * (maxR - minR);
     ctx.beginPath();
-    ctx.moveTo(home.x, home.y);
-    ctx.lineTo(this.pointer.x, this.pointer.y);
-    ctx.setLineDash([6, 6]);
+    ctx.arc(home.x, home.y, ringR, 0, Math.PI * 2);
+    ctx.strokeStyle = this.withAlpha(color, 0.7);
+    ctx.lineWidth = 3 + strength * 7;
+    ctx.stroke();
+
+    // Filled charge arc from the top, sweeping clockwise with strength, for a
+    // gauge-needle feel.
+    ctx.beginPath();
+    ctx.arc(
+      home.x,
+      home.y,
+      ringR,
+      -Math.PI / 2,
+      -Math.PI / 2 + strength * Math.PI * 2,
+    );
+    ctx.strokeStyle = this.withAlpha(color, 0.95);
+    ctx.lineWidth = 5 + strength * 7;
+    ctx.lineCap = "round";
+    ctx.stroke();
+    ctx.lineCap = "butt";
+
+    // Horizontal energy bar under the ball.
+    const barW = 160;
+    const barH = 10;
+    const barX = home.x - barW / 2;
+    const barY = home.y + this.ball.radius + 28;
+    ctx.fillStyle = "rgba(255,255,255,0.15)";
+    ctx.fillRect(barX, barY, barW, barH);
+    ctx.fillStyle = this.withAlpha(color, 0.9);
+    ctx.fillRect(barX, barY, barW * strength, barH);
     ctx.strokeStyle = "rgba(255,255,255,0.4)";
-    ctx.lineWidth = 2;
-    ctx.stroke();
-    ctx.setLineDash([]);
+    ctx.lineWidth = 1;
+    ctx.strokeRect(barX, barY, barW, barH);
 
-    // Translucent launch-direction arrow (opposite of the drag). Both its
-    // LENGTH and THICKNESS scale with strength so size encodes energy.
-    const ux = -drag.x / rawDist;
-    const uy = -drag.y / rawDist;
-    const minLen = 36;
-    const maxLen = 300;
-    const shaftLen = minLen + strength * (maxLen - minLen);
-    const shaftWidth = 6 + strength * 22;
-    const headLen = 18 + strength * 26;
-    const headWidth = shaftWidth + 14 + strength * 20;
-
-    // Perpendicular unit vector for building the polygon outline.
-    const px = -uy;
-    const py = ux;
-    const tipX = home.x + ux * shaftLen;
-    const tipY = home.y + uy * shaftLen;
-    const neckX = tipX - ux * headLen;
-    const neckY = tipY - uy * headLen;
-    const hw = shaftWidth / 2;
-
-    ctx.beginPath();
-    // Shaft start, left side.
-    ctx.moveTo(home.x + px * hw, home.y + py * hw);
-    ctx.lineTo(neckX + px * hw, neckY + py * hw);
-    // Left barb.
-    ctx.lineTo(neckX + px * (headWidth / 2), neckY + py * (headWidth / 2));
-    // Tip.
-    ctx.lineTo(tipX, tipY);
-    // Right barb.
-    ctx.lineTo(neckX - px * (headWidth / 2), neckY - py * (headWidth / 2));
-    ctx.lineTo(neckX - px * hw, neckY - py * hw);
-    // Shaft start, right side.
-    ctx.lineTo(home.x - px * hw, home.y - py * hw);
-    ctx.closePath();
-
-    ctx.fillStyle = this.withAlpha(color, 0.38);
-    ctx.fill();
-    ctx.strokeStyle = this.withAlpha(color, 0.85);
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-
-    // Power/energy label near the home position.
+    // Energy readout text under the bar.
     ctx.fillStyle = "#ffffff";
     ctx.textAlign = "center";
     ctx.font = "bold 13px system-ui, sans-serif";
     ctx.fillText(
       `${formatEnergy(energyMeV)} (${band.label})`,
       home.x,
-      home.y + this.ball.radius + 20,
+      barY + barH + 16,
     );
+  }
+
+  /**
+   * The DRAWN ball center for the current frame. At home (no launch) it is the
+   * fixed home position; in flight it converges from home toward the detector
+   * center as depth -> 1 (the vanishing point). Draw-only: ball.pos is never
+   * mutated, so physics/arrival stay in their own coordinate space.
+   */
+  private drawnBallPos(): Vec2 {
+    if (!this.shot.launched) {
+      return { x: this.home.x, y: this.home.y };
+    }
+    const f = convergeToTarget(this.ball.depth);
+    const d = this.detector;
+    return {
+      x: this.home.x + (d.x - this.home.x) * f,
+      y: this.home.y + (d.y - this.home.y) * f,
+    };
   }
 
   /** Apply an alpha to one of the known band hex colors. */
@@ -772,7 +794,7 @@ export class Game {
   /** Energy-driven glow color for the ball, by current drag or locked shot. */
   private ballGlowColor(): string {
     const energyMeV = this.dragging
-      ? pullToEnergy(dragDistance(this.currentDrag()), MAX_PULL)
+      ? pullToEnergy(this.pullDistance(), MAX_PULL)
       : this.shot.shotEnergyMeV;
     return energyMeV > 0 ? this.bandColor(energyToBand(energyMeV).id) : "#9fb3ff";
   }
@@ -791,8 +813,7 @@ export class Game {
     for (let i = n - 1; i >= 1; i--) {
       const p = this.trail[i];
       const t = i / n; // 0 (newest-ish) -> 1 (oldest)
-      const progress = flightProgress(p.y, this.home.y, this.detector.y);
-      const r = this.ball.radius * depthScale(progress) * (1 - t * 0.55);
+      const r = this.ball.radius * depthScale(this.ball.depth) * (1 - t * 0.55);
       const alpha = 0.28 * (1 - t);
       if (r <= 0 || alpha <= 0.01) continue;
       ctx.beginPath();
@@ -819,22 +840,23 @@ export class Game {
     let jx = 0;
     let jy = 0;
     if (this.dragging) {
-      const intensity = chargeIntensity(
-        dragDistance(this.currentDrag()),
-        MAX_PULL,
-      );
+      const intensity = chargeIntensity(this.pullDistance(), MAX_PULL);
       const amp = intensity * MAX_CHARGE_JITTER_PX;
       jx = (Math.random() * 2 - 1) * amp;
       jy = (Math.random() * 2 - 1) * amp;
     }
-    const cx = ball.pos.x + jx;
-    const cy = ball.pos.y + jy;
+    // Converge the DRAWN position toward the detector center as depth -> 1, so
+    // the ball recedes into the vanishing point at the back. Draw-only: it
+    // reads ball.depth but never mutates ball.pos (authoritative for logic).
+    const drawn = this.drawnBallPos();
+    const cx = drawn.x + jx;
+    const cy = drawn.y + jy;
 
     // Depth render scale while in flight (never while at home/charging, so the
-    // resting and charging ball keep their full size). RENDER only.
-    const scale = this.shot.launched
-      ? depthScale(flightProgress(ball.pos.y, this.home.y, this.detector.y))
-      : 1;
+    // resting and charging ball keep their full size). The ball reads slightly
+    // larger up close and SHRINKS as it recedes toward the detector. RENDER
+    // only; ball.radius used by logic is never changed.
+    const scale = this.shot.launched ? depthScale(ball.depth) : 1;
     const r = ball.radius * scale;
 
     const glow = this.ballGlowColor();

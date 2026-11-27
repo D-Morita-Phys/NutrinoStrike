@@ -5,6 +5,7 @@ import {
   DEPTH_SCALE_FAR,
   DEPTH_SCALE_NEAR,
   chargeIntensity,
+  convergeToTarget,
   depthScale,
   easeOutCubic,
   flightProgress,
@@ -79,23 +80,48 @@ describe("depthScale", () => {
 });
 
 describe("flightProgress", () => {
-  // home below (larger y), detector above (smaller y): home y=600, det y=160.
-  it("is 0 at home and 1 at the detector", () => {
-    expect(flightProgress(600, 600, 160)).toBe(0);
-    expect(flightProgress(160, 600, 160)).toBe(1);
+  // Motion is depth-based: flightProgress is the clamped depth (0 front, 1 back).
+  it("is 0 at the front and 1 at the detector plane", () => {
+    expect(flightProgress(0)).toBe(0);
+    expect(flightProgress(1)).toBe(1);
   });
 
-  it("is 0.5 at the midpoint", () => {
-    expect(flightProgress(380, 600, 160)).toBeCloseTo(0.5, 10);
+  it("passes a mid-flight depth straight through", () => {
+    expect(flightProgress(0.5)).toBeCloseTo(0.5, 10);
+    expect(flightProgress(0.25)).toBeCloseTo(0.25, 10);
   });
 
-  it("clamps when the ball overshoots or sits below home", () => {
-    expect(flightProgress(100, 600, 160)).toBe(1);
-    expect(flightProgress(700, 600, 160)).toBe(0);
+  it("clamps depth that overshoots the plane or dips below the front", () => {
+    expect(flightProgress(1.5)).toBe(1);
+    expect(flightProgress(-0.5)).toBe(0);
+  });
+});
+
+describe("convergeToTarget", () => {
+  it("draws at the front/home anchor (0) at depth 0 and on the detector (1) at depth 1", () => {
+    expect(convergeToTarget(0)).toBe(0);
+    expect(convergeToTarget(1)).toBe(1);
   });
 
-  it("returns 0 for a degenerate span", () => {
-    expect(flightProgress(300, 300, 300)).toBe(0);
+  it("is monotonically increasing between the front and the back", () => {
+    let prev = convergeToTarget(0);
+    for (let i = 1; i <= 20; i++) {
+      const cur = convergeToTarget(i / 20);
+      expect(cur).toBeGreaterThanOrEqual(prev);
+      expect(cur).toBeGreaterThanOrEqual(0);
+      expect(cur).toBeLessThanOrEqual(1);
+      prev = cur;
+    }
+  });
+
+  it("eases out (accelerates toward the detector early)", () => {
+    // Eased convergence moves past the linear midpoint by the time depth is 0.5.
+    expect(convergeToTarget(0.5)).toBeGreaterThan(0.5);
+  });
+
+  it("clamps depth outside 0..1", () => {
+    expect(convergeToTarget(-1)).toBe(0);
+    expect(convergeToTarget(2)).toBe(1);
   });
 });
 

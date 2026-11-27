@@ -2,13 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   DETECTOR_IDS,
   createDetector,
-  createDetectors,
-  detectorHit,
-  hitTest,
   isDetectorId,
-  type DetectorId,
 } from "../detectors.ts";
-import { createBall } from "../physics.ts";
 import {
   clampVolume,
   parseStoredVolume,
@@ -31,7 +26,9 @@ describe("createDetector", () => {
     expect(d.x).toBeCloseTo(WIDTH / 2, 6);
   });
 
-  it("places the detector near the top of the field (y ~= height*0.22)", () => {
+  it("anchors the detector near the top of the field (y ~= height*0.22)", () => {
+    // The detector sits at the back/far vanishing point; this y is the nominal
+    // draw anchor the renderer uses as the far target.
     const d = createDetector("kamland", WIDTH, HEIGHT);
     expect(d.y).toBeCloseTo(HEIGHT * 0.22, 6);
   });
@@ -48,24 +45,6 @@ describe("createDetector", () => {
       "Super-Kamiokande",
     );
   });
-
-  it("hit-tests true when the ball overlaps the center", () => {
-    const d = createDetector("superK", WIDTH, HEIGHT);
-    const ball = createBall(d.x, d.y);
-    expect(hitTest(d, ball)).toBe(true);
-  });
-
-  it("hit-tests false when the ball is far away", () => {
-    const d = createDetector("superK", WIDTH, HEIGHT);
-    const ball = createBall(d.x, HEIGHT - 1);
-    expect(hitTest(d, ball)).toBe(false);
-  });
-
-  it("is reachable via detectorHit against a single-element list", () => {
-    const d = createDetector("kamland", WIDTH, HEIGHT);
-    const ball = createBall(d.x, d.y);
-    expect(detectorHit([d], ball)?.id).toBe("kamland");
-  });
 });
 
 describe("isDetectorId", () => {
@@ -73,15 +52,6 @@ describe("isDetectorId", () => {
     expect(isDetectorId("superK")).toBe(true);
     expect(isDetectorId("kamland")).toBe(true);
     expect(isDetectorId("nope")).toBe(false);
-  });
-});
-
-describe("createDetectors (multi-target, retained)", () => {
-  it("still returns both detectors for reachability tests", () => {
-    const ds = createDetectors(WIDTH, HEIGHT);
-    const ids = ds.map((d) => d.id as DetectorId);
-    expect(ids).toContain("superK");
-    expect(ids).toContain("kamland");
   });
 });
 
