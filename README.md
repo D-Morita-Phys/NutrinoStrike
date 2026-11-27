@@ -83,10 +83,14 @@ development.
   do not need to grab the ball itself.
 - Drag in **any direction** to charge. Only the DISTANCE you drag within the
   shot window matters (magnitude only); the direction is ignored. While you
-  drag, a translucent charge gauge appears, a growing ring around the ball plus
-  an energy bar whose fill grows with pull strength, so its size reads the
-  launch energy. An energy readout and band color accompany it. There is no aim
-  arrow, because there is no aiming.
+  drag, a translucent charge gauge appears as a STRAIGHT arrow (a rectangular
+  shaft plus a triangular head) pointing up toward the detector. The arrow is
+  straight, with no curved segments, and its whole size (shaft length and
+  thickness and head) grows with pull strength, so a weak pull draws a small
+  arrow and a full pull a clearly larger one, reading the launch energy. An
+  energy readout and band color accompany it. The arrow is a charge gauge, not
+  an aim arrow: it always points toward the detector, because there is no
+  aiming.
 - Release to fire the ball straight into **depth** toward the detector at the
   back. The farther you dragged, the higher the neutrino energy and the more
   forcefully and faster the ball reaches the back. Arrival at the detector kicks
@@ -112,11 +116,19 @@ no external assets:
   screen. A stronger pull produces a stronger vibration, so the shake reads the
   energy you are building up. The ball's world coordinates are untouched; the
   wobble is a draw-time transform.
-- **Zoom into the detector.** From the moment you release until the ball hits,
-  the camera zooms in toward the chosen detector, so the shot pushes in on the
-  target. The zoom is a draw-time (save/translate/scale/restore) transform that
-  leaves the physics and hit test in world coordinates, and it resets cleanly on
-  replay.
+- **Focus on the target.** From the moment you release until the ball hits, the
+  camera pushes in toward the chosen detector so the target clearly becomes the
+  main subject while the ball flies to it. The zoom is a draw-time
+  (save/translate/scale/restore) transform that leaves the physics and hit test
+  in world coordinates, and it resets cleanly on replay.
+- **Photon burst on hit.** The instant the ball reaches the detector, a radial
+  burst of bright, light-colored particles fires from the hit point to evoke the
+  photon flash a real detector registers. The particles stream outward and fade,
+  drawn with additive Canvas 2D compositing so they read as glowing light. The
+  burst plays on every hit, sits alongside the rare-drop flash, and is cleared
+  on replay so each run starts clean. Like the other effects it is drawing-only
+  and never touches the physics; the particle math is a set of pure functions in
+  `src/game/effects.ts`.
 
 When the ball reaches the detector plane at the back, the launch energy is
 converted to an energy band, the lottery draws a species using that band's

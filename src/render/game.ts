@@ -30,10 +30,18 @@ import {
 import {
   CAMERA_ZOOM_MIN,
   MAX_CHARGE_JITTER_PX,
+  PHOTON_COUNT,
+  type Photon,
+  arrowGaugeDims,
   chargeIntensity,
   convergeToTarget,
   depthScale,
   flightProgress,
+  isPhotonDead,
+  photonAlpha,
+  photonBurstRevealMs,
+  spawnPhotonBurst,
+  updatePhoton,
   zoomForProgress,
 } from "../game/effects.ts";
 import { AudioEngine } from "../game/audio.ts";
@@ -144,6 +152,11 @@ export class Game {
   // captured each frame while a shot is in flight. Presentation-only.
   private trail: Vec2[] = [];
 
+  // Live photon particles from the hit-time burst. Spawned on every hit at the
+  // detector position and advanced/culled every frame in update(). Drawing-only
+  // (lives in the detector-centered zoom block in render()).
+  private photons: Photon[] = [];
+
   // Slowly advancing angle for the spherical highlight, giving a spinning feel.
   private spin = 0;
 
@@ -152,8 +165,15 @@ export class Game {
   private readonly history: Observation[] = [];
   private lastTime = 0;
   private rafId = 0;
-  /** Pending reset timeout after a resolved shot, so stop() can clear it. */
-  private resetTimeoutId = 0;
+  /**
+   * Pending "reveal then resolve" timeout after a hit. On a hit the renderer
+   * fires the FX and spawns the photon burst, but defers the ui.onResolve
+   * hand-off (which navigates to the result scene and hides/stops this canvas)
+   * by this timeout so the burst actually animates on-screen first. stop(),
+   * reset() and destroy() clear it so a shot resolved just before the player
+   * leaves the play scene can never navigate late (stale-state guard).
+   */
+  private revealTimeoutId = 0;
   /**
    * Whether the render/update loop is live. Checked inside the loop before
    * scheduling the next frame so that a stop() triggered from within a frame
@@ -205,22 +225,23 @@ export class Game {
   /**
    * Re-home the ball and clear the shot lifecycle so the next run starts
    * clean. Called on every entry into the play scene (see app.ts). Without
-   * this, a shot resolved in the previous run (its pending reset timeout was
+   * this, a shot resolved in the previous run (its pending reveal timeout was
    * cancelled by stop()) would leak into the next run: the leftover ball would
    * resume falling and block input until it came to rest. Cancelling any
-   * pending reset timeout here makes reset idempotent and safe to call while
+   * pending reveal timeout here makes reset idempotent and safe to call while
    * the loop is stopped.
    */
   reset(): void {
-    if (this.resetTimeoutId !== 0) {
-      window.clearTimeout(this.resetTimeoutId);
-      this.resetTimeoutId = 0;
+    if (this.revealTimeoutId !== 0) {
+      window.clearTimeout(this.revealTimeoutId);
+      this.revealTimeoutId = 0;
     }
     this.dragging = false;
     this.shake = 0;
     this.flash = 0;
     this.cameraZoom = CAMERA_ZOOM_MIN;
     this.trail = [];
+    this.photons = [];
     this.resetBall();
   }
 
@@ -280,9 +301,9 @@ export class Game {
     this.running = false;
     cancelAnimationFrame(this.rafId);
     this.rafId = 0;
-    if (this.resetTimeoutId !== 0) {
-      window.clearTimeout(this.resetTimeoutId);
-      this.resetTimeoutId = 0;
+    if (this.revealTimeoutId !== 0) {
+      window.clearTimeout(this.revealTimeoutId);
+      this.revealTimeoutId = 0;
     }
   }
 
@@ -472,6 +493,15 @@ export class Game {
       if (this.flash < 0) this.flash = 0;
     }
 
+    // Advance and cull the hit-time photon burst EVERY frame, independent of
+    // shot state, so it keeps animating during the reveal delay between a hit
+    // resolving and the deferred hand-off to the result scene. Independent of
+    // the shake/flash decay above.
+    if (this.photons.length > 0) {
+      for (const p of this.photons) updatePhoton(p, dt);
+      this.photons = this.photons.filter((p) => !isPhotonDead(p));
+    }
+
     // Slow spin for the ball highlight (presentation only).
     this.spin = (this.spin + dt * 2.2) % (Math.PI * 2);
 
@@ -530,20 +560,32 @@ export class Game {
       this.audio.play("hit");
     }
 
+    // Photon flash: fire a radial burst of bright particles at the detector hit
+    // point for BOTH rare and non-rare hits. This coexists with the rare-drop
+    // flash/shake/audio above (additive, no double-trigger).
+    this.photons = spawnPhotonBurst(detector.x, detector.y, PHOTON_COUNT);
+
     this.showResult(observation);
     this.history.unshift(observation);
     if (this.history.length > MAX_HISTORY) this.history.pop();
     this.renderHistory();
 
-    // Notify the app so it can switch to the result scene and record the
-    // discovery in the collection.
-    this.ui.onResolve?.(observation);
-
-    // Give the ball a brief visible bounce, then reset for the next shot.
-    this.resetTimeoutId = window.setTimeout(() => {
-      this.resetTimeoutId = 0;
-      this.resetBall();
-    }, 450);
+    // Defer the hand-off to the result scene. onResolve navigates away, which
+    // hides this canvas and stops the loop; calling it now (as the previous
+    // version did, synchronously) would freeze the burst at its spawn point and
+    // the player would never see it. Instead keep the play loop running so the
+    // photon burst (and the shake/flash impact) animate on-screen, then notify
+    // the app once the burst has had time to play out.
+    //
+    // The timeout handle is cleared by stop()/reset()/destroy(), so if the
+    // player leaves the play scene before it fires (e.g. やり直し), the deferred
+    // onResolve never runs and cannot navigate late. shot.resolved is already
+    // set above and update() guards on it, so a single shot schedules exactly
+    // one reveal (no double onResolve).
+    this.revealTimeoutId = window.setTimeout(() => {
+      this.revealTimeoutId = 0;
+      this.ui.onResolve?.(observation);
+    }, photonBurstRevealMs());
   }
 
   // --- Result UI -----------------------------------------------------------
@@ -637,6 +679,11 @@ export class Game {
     this.renderAimGuide();
     this.renderTrail();
     this.renderBall();
+    // Photon burst is drawn INSIDE the camera-zoom block: the detector is the
+    // camera focal point, so drawing the particles here (with the same
+    // detector-centered scale applied) keeps them anchored on the detector as
+    // the view zooms, rather than drifting in screen space.
+    this.renderPhotons();
 
     // Close the camera-zoom transform; the flash is painted in screen space.
     ctx.restore();
@@ -682,12 +729,13 @@ export class Game {
   /**
    * Magnitude-only charge gauge shown while dragging. There is NO aim
    * direction: the ball always fires toward the detector, so instead of a
-   * launch arrow we draw a charge meter that reads pull STRENGTH only.
+   * launch arrow we draw a STRAIGHT arrow whose SIZE encodes pull STRENGTH.
    *
-   * It has two parts, both coloured by the current energy band:
-   *  - a growing ring around the resting ball whose radius tracks strength;
-   *  - a horizontal energy bar + readout under the ball.
-   * Styling stays translucent to match the previous aim guide.
+   * The arrow points UP (toward the detector at the back / top of the canvas)
+   * to suggest firing the neutrino into depth. It is a straight rectangular
+   * shaft plus a triangular head; both grow with strength via arrowGaugeDims().
+   * It is coloured by the current energy band and stays translucent to match
+   * the previous aim guide. A compact energy label sits just below the base.
    */
   private renderAimGuide(): void {
     if (!this.dragging) return;
@@ -701,54 +749,64 @@ export class Game {
     const strength = Math.min(rawDist, MAX_PULL) / MAX_PULL;
     const color = this.bandColor(band.id);
 
-    // Growing charge ring around the resting ball. Its radius and thickness
-    // both scale with strength, so size encodes energy with no direction.
-    const minR = this.ball.radius + 10;
-    const maxR = this.ball.radius + 96;
-    const ringR = minR + strength * (maxR - minR);
-    ctx.beginPath();
-    ctx.arc(home.x, home.y, ringR, 0, Math.PI * 2);
-    ctx.strokeStyle = this.withAlpha(color, 0.7);
-    ctx.lineWidth = 3 + strength * 7;
-    ctx.stroke();
+    // Straight-arrow dimensions (pure, unit-tested in effects.ts).
+    const dims = arrowGaugeDims(strength);
 
-    // Filled charge arc from the top, sweeping clockwise with strength, for a
-    // gauge-needle feel.
+    // The arrow grows upward from a fixed base just above the resting ball; the
+    // tip extends toward the top of the canvas. The base is pinned near the ball
+    // and the total length is clamped so the tip never runs off the top edge.
+    const baseY = home.y - this.ball.radius - 6;
+    const totalLen = dims.shaftLength + dims.headLength;
+    const maxLen = Math.max(0, baseY - 8); // keep an 8px margin from the top edge
+    const clampedTotal = Math.min(totalLen, maxLen);
+    // Preserve the head's share of the (possibly clamped) total length.
+    const headLength =
+      totalLen > 0 ? (dims.headLength / totalLen) * clampedTotal : 0;
+    const shaftLength = clampedTotal - headLength;
+
+    const tipY = baseY - clampedTotal;
+    const shaftTopY = baseY - shaftLength; // where the head base sits
+    const halfShaft = dims.shaftThickness / 2;
+
+    ctx.save();
+
+    // Straight rectangular shaft.
+    ctx.fillStyle = this.withAlpha(color, 0.85);
+    ctx.fillRect(home.x - halfShaft, shaftTopY, dims.shaftThickness, shaftLength);
+
+    // Triangular head at the tip, base width = 2 * headHalfWidth.
     ctx.beginPath();
-    ctx.arc(
-      home.x,
-      home.y,
-      ringR,
-      -Math.PI / 2,
-      -Math.PI / 2 + strength * Math.PI * 2,
-    );
+    ctx.moveTo(home.x, tipY); // tip
+    ctx.lineTo(home.x - dims.headHalfWidth, shaftTopY); // base left
+    ctx.lineTo(home.x + dims.headHalfWidth, shaftTopY); // base right
+    ctx.closePath();
+    ctx.fill();
+
+    // Translucent outline/glow consistent with the previous gauge translucency.
     ctx.strokeStyle = this.withAlpha(color, 0.95);
-    ctx.lineWidth = 5 + strength * 7;
-    ctx.lineCap = "round";
+    ctx.lineWidth = 2;
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    ctx.moveTo(home.x - halfShaft, baseY);
+    ctx.lineTo(home.x - halfShaft, shaftTopY);
+    ctx.lineTo(home.x - dims.headHalfWidth, shaftTopY);
+    ctx.lineTo(home.x, tipY);
+    ctx.lineTo(home.x + dims.headHalfWidth, shaftTopY);
+    ctx.lineTo(home.x + halfShaft, shaftTopY);
+    ctx.lineTo(home.x + halfShaft, baseY);
     ctx.stroke();
-    ctx.lineCap = "butt";
 
-    // Horizontal energy bar under the ball.
-    const barW = 160;
-    const barH = 10;
-    const barX = home.x - barW / 2;
-    const barY = home.y + this.ball.radius + 28;
-    ctx.fillStyle = "rgba(255,255,255,0.15)";
-    ctx.fillRect(barX, barY, barW, barH);
-    ctx.fillStyle = this.withAlpha(color, 0.9);
-    ctx.fillRect(barX, barY, barW * strength, barH);
-    ctx.strokeStyle = "rgba(255,255,255,0.4)";
-    ctx.lineWidth = 1;
-    ctx.strokeRect(barX, barY, barW, barH);
+    ctx.restore();
 
-    // Energy readout text under the bar.
+    // Compact energy readout under the arrow base (DOM energyReadout remains the
+    // authoritative numeric readout; this keeps the on-canvas context).
     ctx.fillStyle = "#ffffff";
     ctx.textAlign = "center";
     ctx.font = "bold 13px system-ui, sans-serif";
     ctx.fillText(
       `${formatEnergy(energyMeV)} (${band.label})`,
       home.x,
-      barY + barH + 16,
+      baseY + 20,
     );
   }
 
@@ -821,6 +879,37 @@ export class Game {
       ctx.fillStyle = this.withAlpha(glow, alpha);
       ctx.fill();
     }
+  }
+
+  /**
+   * Draw the hit-time photon burst as bright, additive glows. Called from
+   * inside the camera-zoom transform block so the particles stay anchored on
+   * the detector focal point as the view magnifies (see render()).
+   *
+   * Each photon is a radial-gradient dot (white core fading through a pale
+   * photon tint to transparent) drawn with "lighter" compositing so overlapping
+   * particles build up into a bright flash. The save/restore around the loop
+   * keeps the composite mode and any alpha from leaking into later drawing.
+   */
+  private renderPhotons(): void {
+    if (this.photons.length === 0) return;
+    const { ctx } = this;
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    for (const p of this.photons) {
+      const a = photonAlpha(p);
+      if (a <= 0 || p.size <= 0) continue;
+      const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.size);
+      // White-hot core -> pale photon tint (soft yellow/blue) -> transparent.
+      grad.addColorStop(0, `rgba(255,255,255,${a})`);
+      grad.addColorStop(0.45, `rgba(190,225,255,${a * 0.85})`);
+      grad.addColorStop(1, "rgba(120,170,255,0)");
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+      ctx.fillStyle = grad;
+      ctx.fill();
+    }
+    ctx.restore();
   }
 
   /**

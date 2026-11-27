@@ -1,14 +1,36 @@
 import { describe, expect, it } from "vitest";
 import {
+  ARROW_MAX_HEAD_HALF_WIDTH_PX,
+  ARROW_MAX_HEAD_LENGTH_PX,
+  ARROW_MAX_LENGTH_PX,
+  ARROW_MAX_THICKNESS_PX,
+  ARROW_MIN_HEAD_HALF_WIDTH_PX,
+  ARROW_MIN_HEAD_LENGTH_PX,
+  ARROW_MIN_LENGTH_PX,
+  ARROW_MIN_THICKNESS_PX,
   CAMERA_ZOOM_MAX,
   CAMERA_ZOOM_MIN,
   DEPTH_SCALE_FAR,
   DEPTH_SCALE_NEAR,
+  PHOTON_MAX_LIFE,
+  PHOTON_MAX_SIZE,
+  PHOTON_MAX_SPEED,
+  PHOTON_MIN_LIFE,
+  PHOTON_MIN_SIZE,
+  PHOTON_MIN_SPEED,
+  PHOTON_REVEAL_TAIL,
+  type Photon,
+  arrowGaugeDims,
   chargeIntensity,
   convergeToTarget,
   depthScale,
   easeOutCubic,
   flightProgress,
+  isPhotonDead,
+  photonAlpha,
+  photonBurstRevealMs,
+  spawnPhotonBurst,
+  updatePhoton,
   zoomForProgress,
 } from "../effects.ts";
 
@@ -125,6 +147,63 @@ describe("convergeToTarget", () => {
   });
 });
 
+describe("arrowGaugeDims", () => {
+  it("equals every MIN dimension at charge 0", () => {
+    const d = arrowGaugeDims(0);
+    expect(d.shaftLength).toBeCloseTo(ARROW_MIN_LENGTH_PX, 10);
+    expect(d.shaftThickness).toBeCloseTo(ARROW_MIN_THICKNESS_PX, 10);
+    expect(d.headLength).toBeCloseTo(ARROW_MIN_HEAD_LENGTH_PX, 10);
+    expect(d.headHalfWidth).toBeCloseTo(ARROW_MIN_HEAD_HALF_WIDTH_PX, 10);
+  });
+
+  it("equals every MAX dimension at charge 1", () => {
+    const d = arrowGaugeDims(1);
+    expect(d.shaftLength).toBeCloseTo(ARROW_MAX_LENGTH_PX, 10);
+    expect(d.shaftThickness).toBeCloseTo(ARROW_MAX_THICKNESS_PX, 10);
+    expect(d.headLength).toBeCloseTo(ARROW_MAX_HEAD_LENGTH_PX, 10);
+    expect(d.headHalfWidth).toBeCloseTo(ARROW_MAX_HEAD_HALF_WIDTH_PX, 10);
+  });
+
+  it("grows monotonically (non-decreasing) across charge 0..1", () => {
+    let prev = arrowGaugeDims(0);
+    for (let i = 1; i <= 20; i++) {
+      const cur = arrowGaugeDims(i / 20);
+      expect(cur.shaftLength).toBeGreaterThanOrEqual(prev.shaftLength);
+      expect(cur.shaftThickness).toBeGreaterThanOrEqual(prev.shaftThickness);
+      expect(cur.headLength).toBeGreaterThanOrEqual(prev.headLength);
+      expect(cur.headHalfWidth).toBeGreaterThanOrEqual(prev.headHalfWidth);
+      prev = cur;
+    }
+  });
+
+  it("clamps inputs below 0 and above 1", () => {
+    const min = arrowGaugeDims(0);
+    const belowZero = arrowGaugeDims(-3);
+    expect(belowZero).toEqual(min);
+
+    const max = arrowGaugeDims(1);
+    const aboveOne = arrowGaugeDims(5);
+    expect(aboveOne).toEqual(max);
+  });
+
+  it("returns strictly positive dimensions across the range", () => {
+    for (let i = 0; i <= 20; i++) {
+      const d = arrowGaugeDims(i / 20);
+      expect(d.shaftLength).toBeGreaterThan(0);
+      expect(d.shaftThickness).toBeGreaterThan(0);
+      expect(d.headLength).toBeGreaterThan(0);
+      expect(d.headHalfWidth).toBeGreaterThan(0);
+    }
+  });
+
+  it("stays within the canvas above the ball home at full charge", () => {
+    // Ball home y ≈ 0.82 * 720 = 590.4. The arrow grows upward from a base near
+    // the ball; its total extent (shaft + head) must leave margin above y=0.
+    const d = arrowGaugeDims(1);
+    expect(d.shaftLength + d.headLength).toBeLessThan(590);
+  });
+});
+
 describe("chargeIntensity", () => {
   it("is 0 with no pull and 1 at full pull", () => {
     expect(chargeIntensity(0, 220)).toBe(0);
@@ -138,5 +217,147 @@ describe("chargeIntensity", () => {
   it("clamps beyond full pull and guards a non-positive maxPull", () => {
     expect(chargeIntensity(500, 220)).toBe(1);
     expect(chargeIntensity(100, 0)).toBe(0);
+  });
+});
+
+describe("spawnPhotonBurst", () => {
+  /** A deterministic rng cycling through a fixed sequence of 0..1 values. */
+  function seqRng(values: number[]): () => number {
+    let i = 0;
+    return () => values[i++ % values.length];
+  }
+
+  it("produces exactly `count` particles all starting at the origin", () => {
+    const burst = spawnPhotonBurst(100, 200, 10, seqRng([0.1, 0.5, 0.7, 0.3]));
+    expect(burst).toHaveLength(10);
+    for (const p of burst) {
+      expect(p.x).toBe(100);
+      expect(p.y).toBe(200);
+    }
+  });
+
+  it("gives every particle a nonzero velocity and life within range", () => {
+    const burst = spawnPhotonBurst(0, 0, 50, seqRng([0.05, 0.4, 0.6, 0.9]));
+    for (const p of burst) {
+      expect(Math.hypot(p.vx, p.vy)).toBeGreaterThan(0);
+      expect(p.life).toBeGreaterThanOrEqual(PHOTON_MIN_LIFE - 1e-9);
+      expect(p.life).toBeLessThanOrEqual(PHOTON_MAX_LIFE + 1e-9);
+      expect(p.life).toBe(p.maxLife);
+      expect(p.size).toBeGreaterThanOrEqual(PHOTON_MIN_SIZE - 1e-9);
+      expect(p.size).toBeLessThanOrEqual(PHOTON_MAX_SIZE + 1e-9);
+    }
+  });
+
+  it("maps rng samples exactly to angle, speed, life and size", () => {
+    // rng sequence per particle: angle, speed, life, size.
+    const p = spawnPhotonBurst(10, 20, 1, seqRng([0, 1, 1, 0]))[0];
+    // angle = 0 -> cos=1, sin=0; speed at rng=1 is PHOTON_MAX_SPEED.
+    expect(p.vx).toBeCloseTo(PHOTON_MAX_SPEED, 10);
+    expect(p.vy).toBeCloseTo(0, 10);
+    // life at rng=1 -> PHOTON_MAX_LIFE; size at rng=0 -> PHOTON_MIN_SIZE.
+    expect(p.maxLife).toBeCloseTo(PHOTON_MAX_LIFE, 10);
+    expect(p.life).toBeCloseTo(PHOTON_MAX_LIFE, 10);
+    expect(p.size).toBeCloseTo(PHOTON_MIN_SIZE, 10);
+  });
+
+  it("maps a zero speed sample to the minimum speed", () => {
+    // rng sequence: angle=0, speed=0, life=0, size=0 -> speed is PHOTON_MIN_SPEED.
+    const p = spawnPhotonBurst(0, 0, 1, seqRng([0, 0, 0, 0]))[0];
+    expect(Math.hypot(p.vx, p.vy)).toBeCloseTo(PHOTON_MIN_SPEED, 10);
+  });
+
+  it("returns an empty array for a zero count", () => {
+    expect(spawnPhotonBurst(0, 0, 0, seqRng([0.5]))).toHaveLength(0);
+  });
+});
+
+describe("updatePhoton", () => {
+  function photon(overrides: Partial<Photon> = {}): Photon {
+    return {
+      x: 0,
+      y: 0,
+      vx: 100,
+      vy: -50,
+      life: 1,
+      maxLife: 1,
+      size: 4,
+      ...overrides,
+    };
+  }
+
+  it("moves by vx*dt / vy*dt and reduces life by dt", () => {
+    const p = photon({ x: 10, y: 20, vx: 100, vy: -50, life: 1 });
+    updatePhoton(p, 0.1);
+    expect(p.x).toBeCloseTo(10 + 100 * 0.1, 10);
+    expect(p.y).toBeCloseTo(20 - 50 * 0.1, 10);
+    expect(p.life).toBeCloseTo(1 - 0.1, 10);
+  });
+
+  it("decelerates the particle (mild drag) as it ages", () => {
+    const p = photon({ vx: 100, vy: -50 });
+    updatePhoton(p, 0.1);
+    expect(Math.abs(p.vx)).toBeLessThan(100);
+    expect(Math.abs(p.vy)).toBeLessThan(50);
+  });
+
+  it("returns the same mutated particle", () => {
+    const p = photon();
+    expect(updatePhoton(p, 0.05)).toBe(p);
+  });
+});
+
+describe("photonAlpha", () => {
+  function photon(life: number, maxLife: number): Photon {
+    return { x: 0, y: 0, vx: 0, vy: 0, life, maxLife, size: 4 };
+  }
+
+  it("is 1 at full life and 0 at end of life", () => {
+    expect(photonAlpha(photon(1, 1))).toBe(1);
+    expect(photonAlpha(photon(0, 1))).toBe(0);
+  });
+
+  it("tracks the life fraction and clamps to 0..1", () => {
+    expect(photonAlpha(photon(0.5, 1))).toBeCloseTo(0.5, 10);
+    expect(photonAlpha(photon(2, 1))).toBe(1); // clamps above 1
+    expect(photonAlpha(photon(-1, 1))).toBe(0); // clamps below 0
+    expect(photonAlpha(photon(1, 0))).toBe(0); // guards a non-positive maxLife
+  });
+});
+
+describe("isPhotonDead", () => {
+  function photon(life: number): Photon {
+    return { x: 0, y: 0, vx: 0, vy: 0, life, maxLife: 1, size: 4 };
+  }
+
+  it("is false while life remains and flips true at/after life <= 0", () => {
+    expect(isPhotonDead(photon(0.01))).toBe(false);
+    expect(isPhotonDead(photon(0))).toBe(true);
+    expect(isPhotonDead(photon(-0.5))).toBe(true);
+  });
+});
+
+describe("photonBurstRevealMs", () => {
+  it("covers the full longest photon life plus the reveal tail", () => {
+    // The reveal delay must be at least as long as the slowest photon's life so
+    // the whole burst has animated before the result scene takes over.
+    const expected = Math.round((PHOTON_MAX_LIFE + PHOTON_REVEAL_TAIL) * 1000);
+    expect(photonBurstRevealMs()).toBe(expected);
+    expect(photonBurstRevealMs()).toBeGreaterThanOrEqual(
+      Math.round(PHOTON_MAX_LIFE * 1000),
+    );
+  });
+
+  it("is a positive whole number of milliseconds", () => {
+    const ms = photonBurstRevealMs();
+    expect(ms).toBeGreaterThan(0);
+    expect(Number.isInteger(ms)).toBe(true);
+  });
+
+  it("scales with the supplied life and tail and clamps negatives to 0", () => {
+    expect(photonBurstRevealMs(0.5, 0.1)).toBe(600);
+    expect(photonBurstRevealMs(1, 0)).toBe(1000);
+    // Negative inputs are floored so the delay never goes below the other term.
+    expect(photonBurstRevealMs(-1, 0.2)).toBe(200);
+    expect(photonBurstRevealMs(0.3, -1)).toBe(300);
   });
 });
