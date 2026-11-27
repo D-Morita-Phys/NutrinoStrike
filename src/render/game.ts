@@ -29,6 +29,14 @@ import {
   createDetector,
   hitTest,
 } from "../game/detectors.ts";
+import {
+  CAMERA_ZOOM_MIN,
+  MAX_CHARGE_JITTER_PX,
+  chargeIntensity,
+  depthScale,
+  flightProgress,
+  zoomForProgress,
+} from "../game/effects.ts";
 import { AudioEngine } from "../game/audio.ts";
 import {
   type ShotState,
@@ -89,6 +97,16 @@ const RARE_SPECIES: NeutrinoSpecies = "supernovaBurst";
 /** How fast the screen shake decays toward zero (higher = snappier). */
 const SHAKE_DECAY_PER_SEC = 6;
 
+/**
+ * How fast the camera zoom eases toward its progress-driven target each frame
+ * (higher = snappier catch-up). The target itself comes from flight progress;
+ * this smoothing keeps the magnification from snapping between frames.
+ */
+const CAMERA_ZOOM_EASE_PER_SEC = 9;
+
+/** Number of recent ball positions kept for the motion trail / afterimage. */
+const TRAIL_LENGTH = 8;
+
 export class Game {
   private readonly ctx: CanvasRenderingContext2D;
   private readonly bounds: Bounds;
@@ -111,6 +129,18 @@ export class Game {
   // Full-canvas celebration flash (0..1 opacity), decays to zero. Triggered on
   // a rare supernova-burst drop together with a stronger shake + special sound.
   private flash = 0;
+
+  // Camera zoom toward the detector during a shot (eased 1.0 -> ~2.2 in
+  // render-space only; physics/hitTest stay in raw world coords). The actual
+  // drawn value `cameraZoom` eases toward a progress-driven target each frame.
+  private cameraZoom = CAMERA_ZOOM_MIN;
+
+  // Recent ball positions (newest first) for the motion trail / afterimage,
+  // captured each frame while a shot is in flight. Presentation-only.
+  private trail: Vec2[] = [];
+
+  // Slowly advancing angle for the spherical highlight, giving a spinning feel.
+  private spin = 0;
 
   private readonly audio = new AudioEngine();
 
@@ -184,6 +214,8 @@ export class Game {
     this.dragging = false;
     this.shake = 0;
     this.flash = 0;
+    this.cameraZoom = CAMERA_ZOOM_MIN;
+    this.trail = [];
     this.resetBall();
   }
 
@@ -268,6 +300,10 @@ export class Game {
   private resetBall(): void {
     this.ball = this.makeHomeBall();
     resetShotState(this.shot);
+    // Clear per-shot camera/trail FX so no stale zoom or afterimage leaks into
+    // the next shot (whether we got here via rest, resolve or re-entry).
+    this.cameraZoom = CAMERA_ZOOM_MIN;
+    this.trail = [];
     this.updateEnergyReadout(0);
   }
 
@@ -384,9 +420,12 @@ export class Game {
     launchShot(this.shot, pullToEnergy(dist, MAX_PULL));
     this.ball.vel = dragToVelocity(drag, MAX_PULL);
 
-    // Feel: a launch kick scaled by pull strength, plus the launch sound.
+    // Start the per-shot camera zoom from its base; it advances in update()
+    // based on flight progress toward the detector. No full-canvas launch
+    // shake any more: the charge-time shake lives on the ball only.
+    this.cameraZoom = CAMERA_ZOOM_MIN;
+    this.trail = [];
     const strength = Math.min(dist, MAX_PULL) / MAX_PULL;
-    this.addShake(4 + strength * 10);
     this.audio.play("launch", strength);
   }
 
@@ -423,9 +462,26 @@ export class Game {
       if (this.flash < 0) this.flash = 0;
     }
 
-    if (!this.shot.launched) return;
+    // Slow spin for the ball highlight (presentation only).
+    this.spin = (this.spin + dt * 2.2) % (Math.PI * 2);
+
+    if (!this.shot.launched) {
+      // No shot in flight: ease the camera back to its base so any residual
+      // zoom from a just-finished shot settles smoothly.
+      this.easeCameraToward(CAMERA_ZOOM_MIN, dt);
+      return;
+    }
 
     step(this.ball, this.bounds, dt);
+
+    // Record the ball's WORLD position for the motion trail (newest first).
+    this.trail.unshift({ x: this.ball.pos.x, y: this.ball.pos.y });
+    if (this.trail.length > TRAIL_LENGTH) this.trail.length = TRAIL_LENGTH;
+
+    // Advance the detector zoom from flight progress (0 at launch, 1 at the
+    // detector). Drawing-only: hitTest/step below still use raw world coords.
+    const progress = flightProgress(this.ball.pos.y, this.home.y, this.detector.y);
+    this.easeCameraToward(zoomForProgress(progress), dt);
 
     if (!this.shot.resolved) {
       if (hitTest(this.detector, this.ball)) {
@@ -438,6 +494,13 @@ export class Game {
     if (isAtRest(this.ball, this.bounds)) {
       this.resetBall();
     }
+  }
+
+  /** Smoothly ease the drawn camera zoom toward a target (frame-rate safe). */
+  private easeCameraToward(target: number, dt: number): void {
+    const k = 1 - Math.pow(1 / (1 + CAMERA_ZOOM_EASE_PER_SEC), dt);
+    this.cameraZoom += (target - this.cameraZoom) * k;
+    if (Math.abs(this.cameraZoom - target) < 0.001) this.cameraZoom = target;
   }
 
   private resolveShot(detector: Detector): void {
@@ -535,25 +598,45 @@ export class Game {
       ox = (Math.random() * 2 - 1) * this.shake;
       oy = (Math.random() * 2 - 1) * this.shake;
     }
+    // Clear in untransformed screen space first.
+    ctx.clearRect(0, 0, bounds.width, bounds.height);
+
+    // OUTER transform: the decaying screen shake as a transform-only jitter.
+    // This never touches any logical coordinates; it only offsets the drawing.
     ctx.save();
     ctx.translate(ox, oy);
 
-    ctx.clearRect(-ox, -oy, bounds.width, bounds.height);
+    // INNER transform: focal-point camera zoom toward the detector center. We
+    // translate to the detector center, scale, then translate back so the
+    // detector stays fixed while the scene magnifies into it. Drawing-only;
+    // hitTest()/step() still run in raw world coords.
+    ctx.save();
+    if (this.cameraZoom !== 1) {
+      const d = this.detector;
+      ctx.translate(d.x, d.y);
+      ctx.scale(this.cameraZoom, this.cameraZoom);
+      ctx.translate(-d.x, -d.y);
+    }
 
-    // Background gradient (drawn slightly oversized so the shake never exposes
-    // an uncovered edge).
+    // Background gradient (drawn well oversized so neither the shake nor the
+    // zoom ever exposes an uncovered edge).
     const bg = ctx.createLinearGradient(0, 0, 0, bounds.height);
     bg.addColorStop(0, "#0b1026");
     bg.addColorStop(1, "#131a3a");
     ctx.fillStyle = bg;
-    ctx.fillRect(-20, -20, bounds.width + 40, bounds.height + 40);
+    ctx.fillRect(-bounds.width, -bounds.height, bounds.width * 3, bounds.height * 3);
 
     this.renderDetector();
     this.renderAimGuide();
+    this.renderTrail();
     this.renderBall();
 
+    // Close the camera-zoom transform; the flash is painted in screen space.
+    ctx.restore();
+
     // Rare-drop celebration flash, painted over everything but kept tasteful
-    // (peaks well below full white and fades out fast).
+    // (peaks well below full white and fades out fast). Drawn after the zoom is
+    // restored so it stays a full-screen overlay regardless of magnification.
     if (this.flash > 0) {
       ctx.fillStyle = `rgba(255, 245, 210, ${Math.min(this.flash, 1) * 0.55})`;
       ctx.fillRect(-20, -20, bounds.width + 40, bounds.height + 40);
@@ -686,40 +769,128 @@ export class Game {
     }
   }
 
-  private renderBall(): void {
-    const { ctx, ball } = this;
-
-    // Glow that hints the ball's energy while dragging.
+  /** Energy-driven glow color for the ball, by current drag or locked shot. */
+  private ballGlowColor(): string {
     const energyMeV = this.dragging
       ? pullToEnergy(dragDistance(this.currentDrag()), MAX_PULL)
       : this.shot.shotEnergyMeV;
-    const glow = energyMeV > 0 ? this.bandColor(energyToBand(energyMeV).id) : "#9fb3ff";
+    return energyMeV > 0 ? this.bandColor(energyToBand(energyMeV).id) : "#9fb3ff";
+  }
 
-    const grad = ctx.createRadialGradient(
-      ball.pos.x,
-      ball.pos.y,
-      2,
-      ball.pos.x,
-      ball.pos.y,
-      ball.radius,
-    );
-    grad.addColorStop(0, "#ffffff");
-    grad.addColorStop(1, glow);
+  /**
+   * Fading, shrinking afterimages behind the launched ball. Presentation-only:
+   * reads the recorded world positions and draws echoes that get smaller and
+   * more transparent the older they are. The newest sample is the live ball,
+   * so we skip index 0 to avoid double-drawing it.
+   */
+  private renderTrail(): void {
+    if (!this.shot.launched || this.trail.length < 2) return;
+    const { ctx } = this;
+    const glow = this.ballGlowColor();
+    const n = this.trail.length;
+    for (let i = n - 1; i >= 1; i--) {
+      const p = this.trail[i];
+      const t = i / n; // 0 (newest-ish) -> 1 (oldest)
+      const progress = flightProgress(p.y, this.home.y, this.detector.y);
+      const r = this.ball.radius * depthScale(progress) * (1 - t * 0.55);
+      const alpha = 0.28 * (1 - t);
+      if (r <= 0 || alpha <= 0.01) continue;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+      ctx.fillStyle = this.withAlpha(glow, alpha);
+      ctx.fill();
+    }
+  }
+
+  /**
+   * Draw the ball as a lit 3D sphere flung into depth (Monster Strike gacha
+   * feel), entirely in Canvas 2D:
+   *  - depth RENDER scale from flight progress (shrinks toward the detector);
+   *  - offset radial-gradient highlight + rim/terminator for sphere shading;
+   *  - a soft contact shadow/halo under the ball;
+   *  - a small charge-time jitter while dragging (ball-only, intensity scales
+   *    with pull strength) that never mutates ball.pos.
+   * None of this changes ball.radius, which stays authoritative for hitTest.
+   */
+  private renderBall(): void {
+    const { ctx, ball } = this;
+
+    // Ball-only charge jitter while dragging: offset the DRAWN position only.
+    let jx = 0;
+    let jy = 0;
+    if (this.dragging) {
+      const intensity = chargeIntensity(
+        dragDistance(this.currentDrag()),
+        MAX_PULL,
+      );
+      const amp = intensity * MAX_CHARGE_JITTER_PX;
+      jx = (Math.random() * 2 - 1) * amp;
+      jy = (Math.random() * 2 - 1) * amp;
+    }
+    const cx = ball.pos.x + jx;
+    const cy = ball.pos.y + jy;
+
+    // Depth render scale while in flight (never while at home/charging, so the
+    // resting and charging ball keep their full size). RENDER only.
+    const scale = this.shot.launched
+      ? depthScale(flightProgress(ball.pos.y, this.home.y, this.detector.y))
+      : 1;
+    const r = ball.radius * scale;
+
+    const glow = this.ballGlowColor();
+
+    // Soft contact shadow / halo beneath the sphere.
+    const halo = ctx.createRadialGradient(cx, cy + r * 0.2, r * 0.2, cx, cy + r * 0.2, r * 1.9);
+    halo.addColorStop(0, this.withAlpha(glow, 0.35));
+    halo.addColorStop(1, this.withAlpha(glow, 0));
     ctx.beginPath();
-    ctx.arc(ball.pos.x, ball.pos.y, ball.radius, 0, Math.PI * 2);
+    ctx.arc(cx, cy + r * 0.2, r * 1.9, 0, Math.PI * 2);
+    ctx.fillStyle = halo;
+    ctx.fill();
+
+    // Sphere body with an OFFSET highlight so it reads as lit from upper-left.
+    // The highlight offset rotates slowly with `spin` for a spinning feel.
+    const hx = cx + Math.cos(this.spin) * r * 0.38;
+    const hy = cy - r * 0.38 + Math.sin(this.spin) * r * 0.12;
+    const grad = ctx.createRadialGradient(hx, hy, r * 0.1, cx, cy, r);
+    grad.addColorStop(0, "#ffffff");
+    grad.addColorStop(0.45, glow);
+    grad.addColorStop(1, this.shadeDarker(glow));
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
     ctx.fillStyle = grad;
     ctx.fill();
+
+    // Rim / terminator: a bright arc on the lit side, fading into shadow.
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
     ctx.lineWidth = 2;
     ctx.strokeStyle = "rgba(255,255,255,0.7)";
     ctx.stroke();
 
+    // Specular glint.
+    ctx.beginPath();
+    ctx.arc(hx, hy, r * 0.22, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(255,255,255,0.75)";
+    ctx.fill();
+
     // At-rest ring hint when the ball is ready to shoot.
     if (!this.shot.launched && !this.dragging) {
       ctx.beginPath();
-      ctx.arc(ball.pos.x, ball.pos.y, ball.radius + 6, 0, Math.PI * 2);
+      ctx.arc(cx, cy, r + 6, 0, Math.PI * 2);
       ctx.strokeStyle = "rgba(159,179,255,0.5)";
       ctx.lineWidth = 2;
       ctx.stroke();
     }
+  }
+
+  /** Darken a known band hex color for the sphere's shadow side. */
+  private shadeDarker(hex: string): string {
+    const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
+    if (!m) return hex;
+    const r = Math.round(parseInt(m[1], 16) * 0.35);
+    const g = Math.round(parseInt(m[2], 16) * 0.35);
+    const b = Math.round(parseInt(m[3], 16) * 0.35);
+    return `rgb(${r},${g},${b})`;
   }
 }
