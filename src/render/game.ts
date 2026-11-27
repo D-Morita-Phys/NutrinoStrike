@@ -30,11 +30,17 @@ import {
 import {
   CAMERA_ZOOM_MIN,
   MAX_CHARGE_JITTER_PX,
+  PHOTON_COUNT,
+  type Photon,
   arrowGaugeDims,
   chargeIntensity,
   convergeToTarget,
   depthScale,
   flightProgress,
+  isPhotonDead,
+  photonAlpha,
+  spawnPhotonBurst,
+  updatePhoton,
   zoomForProgress,
 } from "../game/effects.ts";
 import { AudioEngine } from "../game/audio.ts";
@@ -145,6 +151,11 @@ export class Game {
   // captured each frame while a shot is in flight. Presentation-only.
   private trail: Vec2[] = [];
 
+  // Live photon particles from the hit-time burst. Spawned on every hit at the
+  // detector position and advanced/culled every frame in update(). Drawing-only
+  // (lives in the detector-centered zoom block in render()).
+  private photons: Photon[] = [];
+
   // Slowly advancing angle for the spherical highlight, giving a spinning feel.
   private spin = 0;
 
@@ -222,6 +233,7 @@ export class Game {
     this.flash = 0;
     this.cameraZoom = CAMERA_ZOOM_MIN;
     this.trail = [];
+    this.photons = [];
     this.resetBall();
   }
 
@@ -473,6 +485,14 @@ export class Game {
       if (this.flash < 0) this.flash = 0;
     }
 
+    // Advance and cull the hit-time photon burst EVERY frame, independent of
+    // shot state, so it keeps animating during the ~450ms reset delay after a
+    // hit resolves. Independent of the shake/flash decay above.
+    if (this.photons.length > 0) {
+      for (const p of this.photons) updatePhoton(p, dt);
+      this.photons = this.photons.filter((p) => !isPhotonDead(p));
+    }
+
     // Slow spin for the ball highlight (presentation only).
     this.spin = (this.spin + dt * 2.2) % (Math.PI * 2);
 
@@ -530,6 +550,11 @@ export class Game {
       this.addShake(16);
       this.audio.play("hit");
     }
+
+    // Photon flash: fire a radial burst of bright particles at the detector hit
+    // point for BOTH rare and non-rare hits. This coexists with the rare-drop
+    // flash/shake/audio above (additive, no double-trigger).
+    this.photons = spawnPhotonBurst(detector.x, detector.y, PHOTON_COUNT);
 
     this.showResult(observation);
     this.history.unshift(observation);
@@ -638,6 +663,11 @@ export class Game {
     this.renderAimGuide();
     this.renderTrail();
     this.renderBall();
+    // Photon burst is drawn INSIDE the camera-zoom block: the detector is the
+    // camera focal point, so drawing the particles here (with the same
+    // detector-centered scale applied) keeps them anchored on the detector as
+    // the view zooms, rather than drifting in screen space.
+    this.renderPhotons();
 
     // Close the camera-zoom transform; the flash is painted in screen space.
     ctx.restore();
@@ -833,6 +863,37 @@ export class Game {
       ctx.fillStyle = this.withAlpha(glow, alpha);
       ctx.fill();
     }
+  }
+
+  /**
+   * Draw the hit-time photon burst as bright, additive glows. Called from
+   * inside the camera-zoom transform block so the particles stay anchored on
+   * the detector focal point as the view magnifies (see render()).
+   *
+   * Each photon is a radial-gradient dot (white core fading through a pale
+   * photon tint to transparent) drawn with "lighter" compositing so overlapping
+   * particles build up into a bright flash. The save/restore around the loop
+   * keeps the composite mode and any alpha from leaking into later drawing.
+   */
+  private renderPhotons(): void {
+    if (this.photons.length === 0) return;
+    const { ctx } = this;
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    for (const p of this.photons) {
+      const a = photonAlpha(p);
+      if (a <= 0 || p.size <= 0) continue;
+      const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.size);
+      // White-hot core -> pale photon tint (soft yellow/blue) -> transparent.
+      grad.addColorStop(0, `rgba(255,255,255,${a})`);
+      grad.addColorStop(0.45, `rgba(190,225,255,${a * 0.85})`);
+      grad.addColorStop(1, "rgba(120,170,255,0)");
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+      ctx.fillStyle = grad;
+      ctx.fill();
+    }
+    ctx.restore();
   }
 
   /**
