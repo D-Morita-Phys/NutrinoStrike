@@ -28,12 +28,14 @@ start  ->  select detector  ->  play  ->  result  ->  collection
   becomes the single on-field target.
 - **Play**: the drag-to-launch play field.
 - **Result**: shown when a shot resolves. It presents the observed species with
-  its Japanese name, color swatch, the detector it was seen at, the energy, and
-  a full Japanese description, plus もういちど (replay with the same detector)
-  and コレクションを見る (open the zukan).
-- **Collection / zukan**: all six species; discovered ones show their name,
-  color, and Japanese description, undiscovered ones are locked as `???`
-  silhouettes. It also shows the discovery count (X / 6) and completion rate.
+  a large self-generated SVG illustration of that neutrino as the hero image,
+  plus its Japanese name, color swatch, the detector it was seen at, the energy,
+  and a full Japanese description, plus もういちど (replay with the same
+  detector) and コレクションを見る (open the zukan).
+- **Collection / zukan**: all six species; discovered ones show their own SVG
+  illustration, name, color, and Japanese description, undiscovered ones are
+  locked as `???` silhouettes (the illustration stays hidden until discovered).
+  It also shows the discovery count (X / 6) and completion rate.
 
 A persistent hamburger menu sits at the top of every screen with three actions:
 やり直し (restart to the start screen), 音量調整 (a volume slider wired to the
@@ -80,10 +82,31 @@ development.
   appears whose length and thickness grow with pull strength, so the arrow size
   reads the launch energy. An energy readout and band color accompany it.
 - Release to launch the ball **UP**. The farther you pulled, the faster the
-  launch and the higher the neutrino energy. Launch and detector hits kick off
-  a short, decaying screen shake and a synthesized sound.
+  launch and the higher the neutrino energy. Detector hits kick off a short,
+  decaying screen shake and a synthesized sound.
 - Both mouse and touch input are supported. On touch screens the page does not
   scroll while you drag.
+
+### Play-screen visuals
+
+The launch is drawn in a Monster Strike-style pseudo-3D, all in Canvas 2D with
+no external assets:
+
+- **Pseudo-3D launch.** The neutrino ball reads as a sphere flying into the
+  field: it scales with depth (larger as it comes toward the detector), carries
+  a fading motion trail, and is shaded with a spherical highlight and rim so it
+  looks round rather than flat. Everything is drawn with Canvas 2D gradients and
+  paths; there is no WebGL, 3D engine, or image asset.
+- **Charge-time shake on the ball only.** While you are pulling and charging the
+  gauge, the vibration is applied to the neutrino ball alone, not the whole
+  screen. A stronger pull produces a stronger vibration, so the shake reads the
+  energy you are building up. The ball's world coordinates are untouched; the
+  wobble is a draw-time transform.
+- **Zoom into the detector.** From the moment you release until the ball hits,
+  the camera zooms in toward the chosen detector, so the shot pushes in on the
+  target. The zoom is a draw-time (save/translate/scale/restore) transform that
+  leaves the physics and hit test in world coordinates, and it resets cleanly on
+  replay.
 
 When the ball strikes the chosen detector, the launch energy is converted to an
 energy band, the lottery draws a species using that band's weights, and the app
@@ -221,10 +244,15 @@ NutrinoStrike/
       menu.ts             persistent top bar + hamburger menu
       content.ts          renders the result card and the zukan grid from pure data
       detectorArt.ts      self-generated SVG illustrations for the detectors
+      neutrinoArt.ts      self-generated SVG illustration per neutrino species
     render/
       game.ts             Canvas drawing, pointer/touch input, shake/flash, game loop
 ```
 
-All visuals are self-generated (inline SVG and Canvas/CSS) and all audio is
+All visuals are self-generated (inline SVG and Canvas 2D/CSS) and all audio is
 synthesized at runtime; the game ships with no external image or audio assets so
-it runs offline on the GitHub Pages subpath.
+it runs offline on the GitHub Pages subpath. Each neutrino species has its own
+symbolic inline-SVG illustration in `src/ui/neutrinoArt.ts` (reactor vessel,
+cross-sectioned Earth, diffuse distant supernovae, a cosmic-ray shower cascade,
+an accelerator ring, and an exploding star for the rare burst), built the same
+way as the detector art and shown on the result screen and in the zukan.
