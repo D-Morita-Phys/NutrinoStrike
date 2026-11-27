@@ -35,34 +35,82 @@ export interface Detector {
   readonly theme: string;
 }
 
+/** Static display/theme metadata for each detector, independent of layout. */
+interface DetectorMeta {
+  readonly label: string;
+  readonly labelJa: string;
+  readonly color: string;
+  readonly theme: string;
+}
+
+const DETECTOR_META: Readonly<Record<DetectorId, DetectorMeta>> = {
+  kamland: {
+    label: "KamLAND",
+    labelJa: "カムランド",
+    color: "#4fc3f7",
+    theme: "low-energy (reactor / geo)",
+  },
+  superK: {
+    label: "Super-Kamiokande",
+    labelJa: "スーパーカミオカンデ",
+    color: "#81c784",
+    theme: "high-energy (atmospheric / accelerator)",
+  },
+};
+
+/** All selectable detector ids in display order. */
+export const DETECTOR_IDS: readonly DetectorId[] = ["kamland", "superK"] as const;
+
+/** Narrow a string to a DetectorId if it is one. */
+export function isDetectorId(value: string): value is DetectorId {
+  return (DETECTOR_IDS as readonly string[]).includes(value);
+}
+
+/** Radius for a detector on a field of the given size. */
+function detectorRadius(width: number, height: number): number {
+  return Math.max(44, Math.min(width, height) * 0.11);
+}
+
+/**
+ * Build a SINGLE detector target by id, centered horizontally near the top of
+ * the play field (y ~= height * 0.22). This is the lone on-field target once a
+ * player has chosen a detector on the select screen. The horizontal center
+ * keeps it reachable by a straight-up launch (see physics reachability tests).
+ *
+ * The id selects only cosmetic theme/label metadata; the observed species is
+ * still always decided by the lottery from launch energy.
+ */
+export function createDetector(
+  id: DetectorId,
+  width: number,
+  height: number,
+): Detector {
+  const meta = DETECTOR_META[id];
+  return {
+    id,
+    x: width / 2,
+    y: height * 0.22,
+    radius: detectorRadius(width, height),
+    label: meta.label,
+    labelJa: meta.labelJa,
+    color: meta.color,
+    theme: meta.theme,
+  };
+}
+
 /**
  * Build the two detector targets for a given play-field size. Both sit in the
  * upper portion of the field so the ball, launched upward, flies into them.
+ *
+ * Retained for the physics reachability tests and any multi-target view; live
+ * gameplay now targets a single chosen detector via createDetector.
  */
 export function createDetectors(width: number, height: number): Detector[] {
-  const radius = Math.max(44, Math.min(width, height) * 0.11);
+  const radius = detectorRadius(width, height);
   const y = height * 0.22;
   return [
-    {
-      id: "kamland",
-      x: width * 0.3,
-      y,
-      radius,
-      label: "KamLAND",
-      labelJa: "カムランド",
-      color: "#4fc3f7",
-      theme: "low-energy (reactor / geo)",
-    },
-    {
-      id: "superK",
-      x: width * 0.7,
-      y,
-      radius,
-      label: "Super-Kamiokande",
-      labelJa: "スーパーカミオカンデ",
-      color: "#81c784",
-      theme: "high-energy (atmospheric / accelerator)",
-    },
+    { id: "kamland", x: width * 0.3, y, radius, ...DETECTOR_META.kamland },
+    { id: "superK", x: width * 0.7, y, radius, ...DETECTOR_META.superK },
   ];
 }
 
