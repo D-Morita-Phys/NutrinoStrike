@@ -17,6 +17,7 @@ import {
   type CollectionState,
 } from "../game/collection.ts";
 import { formatEnergy, type Observation } from "../render/game.ts";
+import { neutrinoArtSvg } from "./neutrinoArt.ts";
 
 /** Formatted completion percentage, e.g. "50%". */
 function completionPercent(state: CollectionState): string {
@@ -44,6 +45,10 @@ export function renderResultCard(
     banner.textContent = "★ レア発見！ ★";
     container.append(banner);
   }
+
+  const art = document.createElement("div");
+  art.className = "result-card-art";
+  art.innerHTML = neutrinoArtSvg(obs.species);
 
   const header = document.createElement("div");
   header.className = "result-card-header";
@@ -80,7 +85,7 @@ export function renderResultCard(
   desc.className = "result-card-desc";
   desc.textContent = info.descriptionJa;
 
-  container.append(header, meta, desc);
+  container.append(art, header, meta, desc);
 }
 
 /** Build one zukan card for a species (discovered or locked). */
@@ -92,10 +97,19 @@ function speciesCard(
   const card = document.createElement("article");
   card.className = `zukan-card${discovered ? "" : " is-locked"}`;
 
-  const swatch = document.createElement("span");
-  swatch.className = "zukan-swatch";
-  // Locked species show a neutral silhouette color, not the real hue.
-  swatch.style.background = discovered ? info.color : "rgba(255,255,255,0.12)";
+  if (discovered) {
+    // Discovered: show the species' self-generated illustration.
+    const artEl = document.createElement("div");
+    artEl.className = "zukan-art";
+    artEl.innerHTML = neutrinoArtSvg(species);
+    card.append(artEl);
+  } else {
+    // Locked: keep the neutral silhouette swatch, never reveal the art.
+    const swatch = document.createElement("span");
+    swatch.className = "zukan-swatch";
+    swatch.style.background = "rgba(255,255,255,0.12)";
+    card.append(swatch);
+  }
 
   const name = document.createElement("div");
   name.className = "zukan-name";
@@ -107,7 +121,7 @@ function speciesCard(
     ? info.descriptionJa
     : "まだ観測していません。検出器に撃ち込んで見つけよう。";
 
-  card.append(swatch, name, desc);
+  card.append(name, desc);
   return card;
 }
 
