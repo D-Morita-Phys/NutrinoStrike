@@ -31,6 +31,81 @@ export const DEPTH_SCALE_FAR = 0.62;
 /** Ball jitter in pixels at full charge (maps from charge intensity 0..1). */
 export const MAX_CHARGE_JITTER_PX = 9;
 
+// ---------------------------------------------------------------------------
+// ARROW CHARGE GAUGE (straight arrow that grows with charged energy)
+// ---------------------------------------------------------------------------
+//
+// While dragging, the renderer draws a STRAIGHT arrow (a rectangular shaft plus
+// a triangular head) pointing up toward the detector/back. Its size encodes the
+// charged energy: a weak pull draws a small arrow, a full pull a clearly larger
+// one. These scalar dimensions are interpolated here (pure, DOM-free) and the
+// Canvas renderer only lays them out. "Straight" means this helper returns plain
+// lengths/thicknesses with no curvature.
+
+/** Shaft length (px) at charge 0 (weakest pull). */
+export const ARROW_MIN_LENGTH_PX = 36;
+
+/** Shaft length (px) at charge 1 (full pull). Sized to fit above the ball home
+ * (y = 0.82 * 720 ≈ 590) without running off the top of the 720px canvas. */
+export const ARROW_MAX_LENGTH_PX = 300;
+
+/** Shaft thickness (px) at charge 0. */
+export const ARROW_MIN_THICKNESS_PX = 6;
+
+/** Shaft thickness (px) at charge 1. */
+export const ARROW_MAX_THICKNESS_PX = 20;
+
+/** Arrowhead length along the shaft (px) at charge 0. */
+export const ARROW_MIN_HEAD_LENGTH_PX = 18;
+
+/** Arrowhead length along the shaft (px) at charge 1. */
+export const ARROW_MAX_HEAD_LENGTH_PX = 54;
+
+/** Arrowhead half-width (px, half the triangle base) at charge 0. */
+export const ARROW_MIN_HEAD_HALF_WIDTH_PX = 12;
+
+/** Arrowhead half-width (px, half the triangle base) at charge 1. */
+export const ARROW_MAX_HEAD_HALF_WIDTH_PX = 34;
+
+/** Dimensions of the straight arrow charge gauge. */
+export interface ArrowGaugeDims {
+  /** Length of the straight rectangular shaft, in px. */
+  shaftLength: number;
+  /** Thickness (width) of the straight shaft, in px. */
+  shaftThickness: number;
+  /** Length of the triangular head along the arrow axis, in px. */
+  headLength: number;
+  /** Half of the triangular head's base width, in px. */
+  headHalfWidth: number;
+}
+
+/**
+ * Size of the STRAIGHT arrow charge gauge for a given charge.
+ *
+ * `charge` is the normalized pull strength (pullDistance / MAX_PULL), clamped to
+ * 0..1. Each dimension is linearly interpolated between its MIN constant (at
+ * charge 0) and its MAX constant (at charge 1), so every dimension is strictly
+ * positive and grows monotonically as the player charges. These are scalar sizes
+ * only: the shaft is straight (no curvature), so the renderer draws a rectangle
+ * for the shaft and a triangle for the head from these numbers.
+ */
+export function arrowGaugeDims(charge: number): ArrowGaugeDims {
+  const t = clamp01(charge);
+  return {
+    shaftLength:
+      ARROW_MIN_LENGTH_PX + (ARROW_MAX_LENGTH_PX - ARROW_MIN_LENGTH_PX) * t,
+    shaftThickness:
+      ARROW_MIN_THICKNESS_PX +
+      (ARROW_MAX_THICKNESS_PX - ARROW_MIN_THICKNESS_PX) * t,
+    headLength:
+      ARROW_MIN_HEAD_LENGTH_PX +
+      (ARROW_MAX_HEAD_LENGTH_PX - ARROW_MIN_HEAD_LENGTH_PX) * t,
+    headHalfWidth:
+      ARROW_MIN_HEAD_HALF_WIDTH_PX +
+      (ARROW_MAX_HEAD_HALF_WIDTH_PX - ARROW_MIN_HEAD_HALF_WIDTH_PX) * t,
+  };
+}
+
 function clamp01(t: number): number {
   if (t < 0) return 0;
   if (t > 1) return 1;

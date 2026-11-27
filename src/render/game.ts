@@ -30,6 +30,7 @@ import {
 import {
   CAMERA_ZOOM_MIN,
   MAX_CHARGE_JITTER_PX,
+  arrowGaugeDims,
   chargeIntensity,
   convergeToTarget,
   depthScale,
@@ -682,12 +683,13 @@ export class Game {
   /**
    * Magnitude-only charge gauge shown while dragging. There is NO aim
    * direction: the ball always fires toward the detector, so instead of a
-   * launch arrow we draw a charge meter that reads pull STRENGTH only.
+   * launch arrow we draw a STRAIGHT arrow whose SIZE encodes pull STRENGTH.
    *
-   * It has two parts, both coloured by the current energy band:
-   *  - a growing ring around the resting ball whose radius tracks strength;
-   *  - a horizontal energy bar + readout under the ball.
-   * Styling stays translucent to match the previous aim guide.
+   * The arrow points UP (toward the detector at the back / top of the canvas)
+   * to suggest firing the neutrino into depth. It is a straight rectangular
+   * shaft plus a triangular head; both grow with strength via arrowGaugeDims().
+   * It is coloured by the current energy band and stays translucent to match
+   * the previous aim guide. A compact energy label sits just below the base.
    */
   private renderAimGuide(): void {
     if (!this.dragging) return;
@@ -701,54 +703,64 @@ export class Game {
     const strength = Math.min(rawDist, MAX_PULL) / MAX_PULL;
     const color = this.bandColor(band.id);
 
-    // Growing charge ring around the resting ball. Its radius and thickness
-    // both scale with strength, so size encodes energy with no direction.
-    const minR = this.ball.radius + 10;
-    const maxR = this.ball.radius + 96;
-    const ringR = minR + strength * (maxR - minR);
-    ctx.beginPath();
-    ctx.arc(home.x, home.y, ringR, 0, Math.PI * 2);
-    ctx.strokeStyle = this.withAlpha(color, 0.7);
-    ctx.lineWidth = 3 + strength * 7;
-    ctx.stroke();
+    // Straight-arrow dimensions (pure, unit-tested in effects.ts).
+    const dims = arrowGaugeDims(strength);
 
-    // Filled charge arc from the top, sweeping clockwise with strength, for a
-    // gauge-needle feel.
+    // The arrow grows upward from a fixed base just above the resting ball; the
+    // tip extends toward the top of the canvas. The base is pinned near the ball
+    // and the total length is clamped so the tip never runs off the top edge.
+    const baseY = home.y - this.ball.radius - 6;
+    const totalLen = dims.shaftLength + dims.headLength;
+    const maxLen = Math.max(0, baseY - 8); // keep an 8px margin from the top edge
+    const clampedTotal = Math.min(totalLen, maxLen);
+    // Preserve the head's share of the (possibly clamped) total length.
+    const headLength =
+      totalLen > 0 ? (dims.headLength / totalLen) * clampedTotal : 0;
+    const shaftLength = clampedTotal - headLength;
+
+    const tipY = baseY - clampedTotal;
+    const shaftTopY = baseY - shaftLength; // where the head base sits
+    const halfShaft = dims.shaftThickness / 2;
+
+    ctx.save();
+
+    // Straight rectangular shaft.
+    ctx.fillStyle = this.withAlpha(color, 0.85);
+    ctx.fillRect(home.x - halfShaft, shaftTopY, dims.shaftThickness, shaftLength);
+
+    // Triangular head at the tip, base width = 2 * headHalfWidth.
     ctx.beginPath();
-    ctx.arc(
-      home.x,
-      home.y,
-      ringR,
-      -Math.PI / 2,
-      -Math.PI / 2 + strength * Math.PI * 2,
-    );
+    ctx.moveTo(home.x, tipY); // tip
+    ctx.lineTo(home.x - dims.headHalfWidth, shaftTopY); // base left
+    ctx.lineTo(home.x + dims.headHalfWidth, shaftTopY); // base right
+    ctx.closePath();
+    ctx.fill();
+
+    // Translucent outline/glow consistent with the previous gauge translucency.
     ctx.strokeStyle = this.withAlpha(color, 0.95);
-    ctx.lineWidth = 5 + strength * 7;
-    ctx.lineCap = "round";
+    ctx.lineWidth = 2;
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    ctx.moveTo(home.x - halfShaft, baseY);
+    ctx.lineTo(home.x - halfShaft, shaftTopY);
+    ctx.lineTo(home.x - dims.headHalfWidth, shaftTopY);
+    ctx.lineTo(home.x, tipY);
+    ctx.lineTo(home.x + dims.headHalfWidth, shaftTopY);
+    ctx.lineTo(home.x + halfShaft, shaftTopY);
+    ctx.lineTo(home.x + halfShaft, baseY);
     ctx.stroke();
-    ctx.lineCap = "butt";
 
-    // Horizontal energy bar under the ball.
-    const barW = 160;
-    const barH = 10;
-    const barX = home.x - barW / 2;
-    const barY = home.y + this.ball.radius + 28;
-    ctx.fillStyle = "rgba(255,255,255,0.15)";
-    ctx.fillRect(barX, barY, barW, barH);
-    ctx.fillStyle = this.withAlpha(color, 0.9);
-    ctx.fillRect(barX, barY, barW * strength, barH);
-    ctx.strokeStyle = "rgba(255,255,255,0.4)";
-    ctx.lineWidth = 1;
-    ctx.strokeRect(barX, barY, barW, barH);
+    ctx.restore();
 
-    // Energy readout text under the bar.
+    // Compact energy readout under the arrow base (DOM energyReadout remains the
+    // authoritative numeric readout; this keeps the on-canvas context).
     ctx.fillStyle = "#ffffff";
     ctx.textAlign = "center";
     ctx.font = "bold 13px system-ui, sans-serif";
     ctx.fillText(
       `${formatEnergy(energyMeV)} (${band.label})`,
       home.x,
-      barY + barH + 16,
+      baseY + 20,
     );
   }
 

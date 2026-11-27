@@ -1,9 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
+  ARROW_MAX_HEAD_HALF_WIDTH_PX,
+  ARROW_MAX_HEAD_LENGTH_PX,
+  ARROW_MAX_LENGTH_PX,
+  ARROW_MAX_THICKNESS_PX,
+  ARROW_MIN_HEAD_HALF_WIDTH_PX,
+  ARROW_MIN_HEAD_LENGTH_PX,
+  ARROW_MIN_LENGTH_PX,
+  ARROW_MIN_THICKNESS_PX,
   CAMERA_ZOOM_MAX,
   CAMERA_ZOOM_MIN,
   DEPTH_SCALE_FAR,
   DEPTH_SCALE_NEAR,
+  arrowGaugeDims,
   chargeIntensity,
   convergeToTarget,
   depthScale,
@@ -122,6 +131,63 @@ describe("convergeToTarget", () => {
   it("clamps depth outside 0..1", () => {
     expect(convergeToTarget(-1)).toBe(0);
     expect(convergeToTarget(2)).toBe(1);
+  });
+});
+
+describe("arrowGaugeDims", () => {
+  it("equals every MIN dimension at charge 0", () => {
+    const d = arrowGaugeDims(0);
+    expect(d.shaftLength).toBeCloseTo(ARROW_MIN_LENGTH_PX, 10);
+    expect(d.shaftThickness).toBeCloseTo(ARROW_MIN_THICKNESS_PX, 10);
+    expect(d.headLength).toBeCloseTo(ARROW_MIN_HEAD_LENGTH_PX, 10);
+    expect(d.headHalfWidth).toBeCloseTo(ARROW_MIN_HEAD_HALF_WIDTH_PX, 10);
+  });
+
+  it("equals every MAX dimension at charge 1", () => {
+    const d = arrowGaugeDims(1);
+    expect(d.shaftLength).toBeCloseTo(ARROW_MAX_LENGTH_PX, 10);
+    expect(d.shaftThickness).toBeCloseTo(ARROW_MAX_THICKNESS_PX, 10);
+    expect(d.headLength).toBeCloseTo(ARROW_MAX_HEAD_LENGTH_PX, 10);
+    expect(d.headHalfWidth).toBeCloseTo(ARROW_MAX_HEAD_HALF_WIDTH_PX, 10);
+  });
+
+  it("grows monotonically (non-decreasing) across charge 0..1", () => {
+    let prev = arrowGaugeDims(0);
+    for (let i = 1; i <= 20; i++) {
+      const cur = arrowGaugeDims(i / 20);
+      expect(cur.shaftLength).toBeGreaterThanOrEqual(prev.shaftLength);
+      expect(cur.shaftThickness).toBeGreaterThanOrEqual(prev.shaftThickness);
+      expect(cur.headLength).toBeGreaterThanOrEqual(prev.headLength);
+      expect(cur.headHalfWidth).toBeGreaterThanOrEqual(prev.headHalfWidth);
+      prev = cur;
+    }
+  });
+
+  it("clamps inputs below 0 and above 1", () => {
+    const min = arrowGaugeDims(0);
+    const belowZero = arrowGaugeDims(-3);
+    expect(belowZero).toEqual(min);
+
+    const max = arrowGaugeDims(1);
+    const aboveOne = arrowGaugeDims(5);
+    expect(aboveOne).toEqual(max);
+  });
+
+  it("returns strictly positive dimensions across the range", () => {
+    for (let i = 0; i <= 20; i++) {
+      const d = arrowGaugeDims(i / 20);
+      expect(d.shaftLength).toBeGreaterThan(0);
+      expect(d.shaftThickness).toBeGreaterThan(0);
+      expect(d.headLength).toBeGreaterThan(0);
+      expect(d.headHalfWidth).toBeGreaterThan(0);
+    }
+  });
+
+  it("stays within the canvas above the ball home at full charge", () => {
+    // Ball home y ≈ 0.82 * 720 = 590.4. The arrow grows upward from a base near
+    // the ball; its total extent (shaft + head) must leave margin above y=0.
+    const d = arrowGaugeDims(1);
+    expect(d.shaftLength + d.headLength).toBeLessThan(590);
   });
 });
 
