@@ -92,6 +92,23 @@ export function flightProgress(depth: number): number {
 }
 
 /**
+ * Fraction (0..1) by which the DRAWN ball position should be moved from its
+ * front/home anchor toward the detector center as it recedes into depth.
+ *
+ * At depth 0 (front) this is 0, so the ball is drawn at its home position; at
+ * depth 1 (the detector plane) this is 1, so the ball is drawn exactly on the
+ * detector center (the vanishing point). It is eased so the ball appears to
+ * accelerate into the distance, matching the camera push-in. Input is clamped
+ * to 0..1. This is a DRAW-ONLY convergence factor; it never changes ball.pos
+ * used by physics/hit resolution.
+ *
+ * Use it to lerp a drawn coordinate: drawn = home + (detector - home) * factor.
+ */
+export function convergeToTarget(depth: number): number {
+  return easeOutCubic(clamp01(depth));
+}
+
+/**
  * Charge-shake intensity (0..1) from the current pull strength. `pullDistance`
  * is the drag distance and `maxPull` the distance mapping to full strength
  * (MAX_PULL), matching the aim-arrow normalization. Intensity 0 means no pull,

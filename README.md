@@ -1,9 +1,12 @@
 # Neutrino Strike
 
 A Monster Strike-style neutrino gacha that runs in the browser. You pick a
-detector, grab a glowing neutrino ball, drag it DOWN, and release to launch it
-UP into the detector you chose (Super-Kamiokande or KamLAND). How far you
-pulled sets the neutrino energy, and a weighted lottery for that energy band
+detector, then charge a glowing neutrino ball by dragging anywhere in the shot
+window and release to fire it straight from the FRONT into DEPTH toward the
+detector shown at the BACK (Super-Kamiokande or KamLAND). There is no gravity
+and no arc, and there is no aiming: the ball always flies toward the detector.
+How FAR you dragged (magnitude only) sets the neutrino energy and how forcefully
+and fast the ball reaches the back, and a weighted lottery for that energy band
 decides which species you actually observe. Reactor and geoneutrinos dominate
 the low band, the diffuse supernova background dominates the mid band, and
 atmospheric and accelerator neutrinos dominate the high band. A supernova burst
@@ -45,8 +48,9 @@ audio engine), and コレクション (open the zukan).
 
 - Vite (dev server, bundler)
 - TypeScript
-- Canvas 2D for rendering (no game engine; physics is a small self-written
-  position/velocity integrator with wall bounce)
+- Canvas 2D for rendering (no game engine; motion is a small self-written
+  depth integrator that advances the ball from the front to the detector plane
+  at the back, with no gravity or bounce)
 - Web Audio API for all sound (synthesized at runtime, no audio files)
 - A small, pure scene state machine (no framework or router)
 - Vitest for unit tests of the pure logic (lottery, physics, detectors, scenes,
@@ -76,14 +80,17 @@ development.
 ## Controls
 
 - Press (mouse) or touch **anywhere** on the play field to start charging. You
-  do not need to grab the ball itself; the pull is always measured from the
-  ball's home position.
-- Drag **DOWN** to pull. While you drag, a translucent launch-direction arrow
-  appears whose length and thickness grow with pull strength, so the arrow size
-  reads the launch energy. An energy readout and band color accompany it.
-- Release to launch the ball **UP**. The farther you pulled, the faster the
-  launch and the higher the neutrino energy. Detector hits kick off a short,
-  decaying screen shake and a synthesized sound.
+  do not need to grab the ball itself.
+- Drag in **any direction** to charge. Only the DISTANCE you drag within the
+  shot window matters (magnitude only); the direction is ignored. While you
+  drag, a translucent charge gauge appears, a growing ring around the ball plus
+  an energy bar whose fill grows with pull strength, so its size reads the
+  launch energy. An energy readout and band color accompany it. There is no aim
+  arrow, because there is no aiming.
+- Release to fire the ball straight into **depth** toward the detector at the
+  back. The farther you dragged, the higher the neutrino energy and the more
+  forcefully and faster the ball reaches the back. Arrival at the detector kicks
+  off a short, decaying screen shake and a synthesized sound.
 - Both mouse and touch input are supported. On touch screens the page does not
   scroll while you drag.
 
@@ -92,11 +99,14 @@ development.
 The launch is drawn in a Monster Strike-style pseudo-3D, all in Canvas 2D with
 no external assets:
 
-- **Pseudo-3D launch.** The neutrino ball reads as a sphere flying into the
-  field: it scales with depth (larger as it comes toward the detector), carries
-  a fading motion trail, and is shaded with a spherical highlight and rim so it
-  looks round rather than flat. Everything is drawn with Canvas 2D gradients and
-  paths; there is no WebGL, 3D engine, or image asset.
+- **Pseudo-3D launch.** The neutrino ball reads as a sphere flying away from you
+  into the field: it starts at the front and SHRINKS as it recedes into depth
+  toward the detector at the back (the vanishing point), its drawn position
+  converging on the detector center. It carries a fading motion trail and is
+  shaded with a spherical highlight and rim so it looks round rather than flat.
+  There is no gravity and no arc; the ball travels straight into depth.
+  Everything is drawn with Canvas 2D gradients and paths; there is no WebGL, 3D
+  engine, or image asset.
 - **Charge-time shake on the ball only.** While you are pulling and charging the
   gauge, the vibration is applied to the neutrino ball alone, not the whole
   screen. A stronger pull produces a stronger vibration, so the shake reads the
@@ -108,9 +118,9 @@ no external assets:
   leaves the physics and hit test in world coordinates, and it resets cleanly on
   replay.
 
-When the ball strikes the chosen detector, the launch energy is converted to an
-energy band, the lottery draws a species using that band's weights, and the app
-switches to the result screen with the species, detector, energy, and a full
+When the ball reaches the detector plane at the back, the launch energy is
+converted to an energy band, the lottery draws a species using that band's
+weights, and the app switches to the result screen with the species, detector, energy, and a full
 Japanese description. Each observation is also recorded to the collection. If
 the draw is a supernova burst, a rare celebration plays: a canvas flash, a
 stronger shake, a distinct synthesized cue, and a レア発見！ banner on the
@@ -138,10 +148,13 @@ completion percentage.
 
 ## Game design
 
-Pull strength maps to a neutrino energy between `MIN_ENERGY_MEV` (1 MeV) and
+Pull strength is the distance you drag within the shot window (magnitude only,
+no direction) and maps to a neutrino energy between `MIN_ENERGY_MEV` (1 MeV) and
 `MAX_ENERGY_MEV` (1000 MeV). The map is logarithmic, so each of the three energy
 bands occupies a comparable slice of the pull range: a gentle pull lands in the
-low band, a medium pull in the mid band, and a strong pull in the high band.
+low band, a medium pull in the mid band, and a strong pull in the high band. The
+same pull magnitude also sets how fast the ball advances through depth, so a
+stronger pull reaches the detector at the back sooner.
 That energy falls into one of three bands, and each band has its own weight
 table that favors different species:
 
@@ -232,7 +245,7 @@ NutrinoStrike/
     game/                 pure logic (no DOM)
       neutrinos.ts        species data + Japanese descriptions + energy bands + weight tables (balance knobs)
       lottery.ts          pull -> energy -> band -> weighted draw
-      physics.ts          ball integration and drag -> velocity/energy
+      physics.ts          depth integration and pull magnitude -> depth speed/energy
       detectors.ts        Super-Kamiokande / KamLAND targets
       scenes.ts           pure scene (screen) state machine
       collection.ts       pure discovery store (injectable Storage; localStorage-backed)
