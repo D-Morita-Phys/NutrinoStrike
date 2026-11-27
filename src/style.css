@@ -73,6 +73,10 @@ body {
   transform: translateY(-6px) rotate(-45deg);
 }
 
+.menu-panel[hidden] {
+  display: none;
+}
+
 .menu-panel {
   position: absolute;
   top: 100%;

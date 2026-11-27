@@ -40,6 +40,46 @@ export function createEmpty(): CollectionState {
 }
 
 /**
+ * A minimal in-memory StorageLike used when the real localStorage is
+ * unavailable (private mode, blocked by browser policy, etc.). Backed by a
+ * Map, so the collection still works for the current session; it just does not
+ * survive a reload.
+ */
+export function createMemoryStorage(): StorageLike {
+  const map = new Map<string, string>();
+  return {
+    getItem: (key) => (map.has(key) ? (map.get(key) as string) : null),
+    setItem: (key, value) => {
+      map.set(key, value);
+    },
+  };
+}
+
+/**
+ * Resolve the storage backing the collection. Accessing `window.localStorage`
+ * can itself throw a SecurityError when the browser forbids storage (the
+ * try/catch inside load()/save() cannot help, because the throw happens on the
+ * property access, not on getItem/setItem). This guards that access and falls
+ * back to in-memory storage so the app still mounts and runs for the session.
+ *
+ * `getLocalStorage` is injectable purely so this guard can be unit-tested
+ * without a DOM; in the app it defaults to reading window.localStorage.
+ */
+export function getCollectionStorage(
+  getLocalStorage: () => StorageLike = () => window.localStorage,
+): StorageLike {
+  try {
+    const storage = getLocalStorage();
+    // A null/undefined localStorage (older/embedded environments) also falls
+    // back rather than crashing later on getItem.
+    if (!storage) return createMemoryStorage();
+    return storage;
+  } catch {
+    return createMemoryStorage();
+  }
+}
+
+/**
  * Parse a raw stored string into a discovered set, tolerating malformed or
  * older data: a non-JSON string, wrong shape, or unknown ids all degrade to
  * "ignore the bad parts" rather than throwing. Only valid species survive.

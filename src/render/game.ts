@@ -119,6 +119,15 @@ export class Game {
   private rafId = 0;
   /** Pending reset timeout after a resolved shot, so stop() can clear it. */
   private resetTimeoutId = 0;
+  /**
+   * Whether the render/update loop is live. Checked inside the loop before
+   * scheduling the next frame so that a stop() triggered from within a frame
+   * (e.g. a hit that synchronously navigates away) ends the loop cleanly
+   * instead of letting the current frame queue another one.
+   */
+  private running = false;
+  /** Whether input listeners are currently attached (teardown gate). */
+  private inputAttached = false;
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -147,6 +156,8 @@ export class Game {
     };
     this.ball = this.makeHomeBall();
 
+    // Input is attached on start() (and re-attached on every restart), not in
+    // the constructor, so the attach/detach lifecycle lives in one place.
     this.attachInput();
     this.updateEnergyReadout(0);
   }
@@ -181,26 +192,70 @@ export class Game {
     return this.audio;
   }
 
-  /** Begin the render/update loop. */
+  /** True while the render/update loop is live. Exposed for tests/wiring. */
+  isRunning(): boolean {
+    return this.running;
+  }
+
+  /** True while input listeners are attached. Exposed for tests. */
+  isInputAttached(): boolean {
+    return this.inputAttached;
+  }
+
+  /**
+   * Begin the render/update loop and (re-)attach input listeners. Safe to call
+   * after a stop(): it re-attaches input and spins up exactly one loop. A
+   * second start() while already running is a no-op, so the loop can never be
+   * doubled up.
+   */
   start(): void {
+    if (this.running) return;
+    this.running = true;
+    // Re-attach input on every (re)start. attachInput() is idempotent, so
+    // repeated start/stop cycles never register duplicate listeners.
+    this.attachInput();
     this.lastTime = performance.now();
     const loop = (now: number) => {
+      // A stop() from inside the previous frame flips running off; bail before
+      // doing any work or scheduling another frame.
+      if (!this.running) return;
       const dt = Math.min((now - this.lastTime) / 1000, 1 / 30);
       this.lastTime = now;
       this.update(dt);
       this.render();
+      // Re-check: update() may have resolved a shot whose onResolve navigated
+      // away and called stop() synchronously. Only queue the next frame while
+      // still running.
+      if (!this.running) return;
       this.rafId = requestAnimationFrame(loop);
     };
     this.rafId = requestAnimationFrame(loop);
   }
 
-  /** Stop the loop and detach listeners. Useful for teardown/tests. */
+  /**
+   * Stop the render/update loop. The loop is torn down (running=false +
+   * cancelAnimationFrame) and any pending reset timeout is cleared, but input
+   * listeners stay attached so a later start() can resume accepting shots.
+   * Idempotent and safe to call from within a frame. Use destroy() for the
+   * permanent teardown that also removes input listeners.
+   */
   stop(): void {
+    this.running = false;
     cancelAnimationFrame(this.rafId);
+    this.rafId = 0;
     if (this.resetTimeoutId !== 0) {
       window.clearTimeout(this.resetTimeoutId);
       this.resetTimeoutId = 0;
     }
+  }
+
+  /**
+   * Permanent teardown: stop the loop AND remove input listeners. After this
+   * the Game should not be reused. Kept separate from stop() so that ordinary
+   * leave/return cycles (stop then start) keep input working.
+   */
+  destroy(): void {
+    this.stop();
     this.detachInput();
   }
 
@@ -219,6 +274,8 @@ export class Game {
   // --- Input ---------------------------------------------------------------
 
   private attachInput(): void {
+    if (this.inputAttached) return;
+    this.inputAttached = true;
     this.canvas.addEventListener("mousedown", this.onDown);
     window.addEventListener("mousemove", this.onMove);
     window.addEventListener("mouseup", this.onUp);
@@ -235,6 +292,8 @@ export class Game {
   }
 
   private detachInput(): void {
+    if (!this.inputAttached) return;
+    this.inputAttached = false;
     this.canvas.removeEventListener("mousedown", this.onDown);
     window.removeEventListener("mousemove", this.onMove);
     window.removeEventListener("mouseup", this.onUp);

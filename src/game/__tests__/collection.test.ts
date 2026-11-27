@@ -4,7 +4,9 @@ import {
   TOTAL_SPECIES,
   completionRate,
   createEmpty,
+  createMemoryStorage,
   discoveredCount,
+  getCollectionStorage,
   isDiscovered,
   load,
   markDiscovered,
@@ -146,6 +148,54 @@ describe("collection: tolerance of malformed / old stored JSON", () => {
       setItem: () => {},
     };
     expect(discoveredCount(load(throwing))).toBe(0);
+  });
+});
+
+describe("collection: in-memory storage fallback", () => {
+  it("createMemoryStorage round-trips values for the session", () => {
+    const mem = createMemoryStorage();
+    let state = markDiscovered(createEmpty(), "reactor");
+    save(mem, state);
+    state = load(mem);
+    expect(isDiscovered(state, "reactor")).toBe(true);
+    expect(discoveredCount(state)).toBe(1);
+  });
+
+  it("createMemoryStorage returns null for unknown keys", () => {
+    expect(createMemoryStorage().getItem("missing")).toBeNull();
+  });
+});
+
+describe("collection: getCollectionStorage guards the storage access", () => {
+  it("returns the provided storage when access succeeds", () => {
+    const real = fakeStorage();
+    const storage = getCollectionStorage(() => real);
+    storage.setItem("k", "v");
+    expect(real.getItem("k")).toBe("v");
+  });
+
+  it("falls back to in-memory storage when the getter throws", () => {
+    const storage = getCollectionStorage(() => {
+      throw new Error("SecurityError");
+    });
+    // Does not throw, and behaves like a working StorageLike.
+    storage.setItem(COLLECTION_STORAGE_KEY, "x");
+    expect(storage.getItem(COLLECTION_STORAGE_KEY)).toBe("x");
+  });
+
+  it("falls back when the getter yields a null/undefined storage", () => {
+    const storage = getCollectionStorage(
+      () => null as unknown as StorageLike,
+    );
+    save(storage, markDiscovered(createEmpty(), "geo"));
+    expect(isDiscovered(load(storage), "geo")).toBe(true);
+  });
+
+  it("keeps the app loadable: load() over the fallback yields empty", () => {
+    const storage = getCollectionStorage(() => {
+      throw new Error("blocked");
+    });
+    expect(discoveredCount(load(storage))).toBe(0);
   });
 });
 

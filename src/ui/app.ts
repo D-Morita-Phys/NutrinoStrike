@@ -10,6 +10,7 @@ import { createSceneMachine, type SceneId } from "../game/scenes.ts";
 import { type DetectorId } from "../game/detectors.ts";
 import { Game, type GameUi, type Observation } from "../render/game.ts";
 import {
+  getCollectionStorage,
   isDiscovered,
   load,
   markDiscovered,
@@ -27,7 +28,10 @@ export function mountApp(root: HTMLElement): void {
   let selectedDetector: DetectorId = "superK";
 
   // Collection (zukan) state, persisted to localStorage via the pure store.
-  const storage = window.localStorage;
+  // getCollectionStorage() guards the localStorage property access (which can
+  // throw under strict browser storage policies) and falls back to in-memory
+  // storage so the app still mounts and the collection works for the session.
+  const storage = getCollectionStorage();
   let collection: CollectionState = load(storage);
 
   const screens = createScreens({
